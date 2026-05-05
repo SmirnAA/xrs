@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# xrs-status — полная диагностика xray-сетапа
+
+PROFILES_DIR="/etc/xray/profiles"
+CONFIG_LINK="/usr/local/etc/xray/config.json"
+SOCKS_PORT=10808
+HTTP_PORT=10809
+
+# цвета
+R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; B=$'\e[34m'; D=$'\e[2m'; N=$'\e[0m'
+ok()   { echo "  ${G}✓${N} $*"; }
+bad()  { echo "  ${R}✗${N} $*"; }
+warn() { echo "  ${Y}!${N} $*"; }
+info() { echo "  ${D}·${N} $*"; }
+hdr()  { echo; echo "${B}── $* ──${N}"; }
+
+# ── 1. Активный профиль ──────────────────────────────────────────────
+hdr "profile"
+if [ -L "$CONFIG_LINK" ]; then
+  current=$(basename "$(readlink -f "$CONFIG_LINK")" .json)
+  ok "active: ${B}$current${N}"
+  target=$(readlink -f "$CONFIG_LINK")
+  info "file: $target"
+
+  # парсим outbound proxy из конфига
+  if command -v jq >/dev/null; then
+    addr=$(jq -r '.outbounds[] | select(.tag=="proxy") | .settings.vnext[0].address' "$target")
+    port=$(jq -r '.outbounds[] | select(.tag=="proxy") | .settings.vnext[0].port'    "$target")
+    sni=$(jq  -r '.outbounds[] | select(.tag=="proxy") | .streamSettings.realitySettings.serverName' "$target")
+    info "server: $addr:$port  (sni: $sni)"
+    SERVER_ADDR=$addr
+    SERVER_PORT=$port
+  fi
+else
+  bad "no active profile (symlink missing)"
+fi
+
+info "available profiles: $(ls "$PROFILES_DIR"/*.json 2>/dev/null | xargs -n1 basename | sed 's/\.json$//' | tr '\n' ' ')"
+
+# ── 2. systemd ────────────────────────────────────────────────────────
+hdr "xray service"
+if systemctl is-active --quiet xray; then
+  ok "active ($(systemctl show xray -p ActiveEnterTimestamp --value | cut -d' ' -f2-3))"
+  mem=$(systemctl show xray -p MemoryCurrent --value)
+  if [ -n "$mem" ] && [ "$mem" != "[not set]" ]; then
+    info "memory: $(numfmt --to=iec "$mem" 2>/dev/null || echo "$mem bytes")"
+  fi
+  pid=$(systemctl show xray -p MainPID --value)
+  info "pid: $pid"
+else
+  bad "inactive"
+fi
+
+# последние ошибки
+errs=$(journalctl -u xray -n 50 --no-pager 2>/dev/null | grep -iE 'error|failed|warn' | grep -v "Special user nobody" | tail -3)
+if [ -n "$errs" ]; then
+  warn "recent warnings/errors:"
+  echo "$errs" | sed 's/^/      /'
+fi
+
+# ── 3. Порты ──────────────────────────────────────────────────────────
+hdr "listening ports"
+for port in $SOCKS_PORT $HTTP_PORT; do
+  if ss -tlnH "sport = :$port" | grep -q LISTEN; then
+    ok "127.0.0.1:$port"
+  else
+    bad "127.0.0.1:$port — not listening"
+  fi
+done
+
+# ── 4. Сеть до сервера ────────────────────────────────────────────────
+hdr "upstream server"
+if [ -n "$SERVER_ADDR" ]; then
+  t0=$(date +%s.%N)
+  if timeout 5 bash -c "</dev/tcp/$SERVER_ADDR/$SERVER_PORT" 2>/dev/null; then
+    t1=$(date +%s.%N)
+    dur=$(awk "BEGIN {printf \"%.0f\", ($t1-$t0)*1000}")
+    ok "tcp $SERVER_ADDR:$SERVER_PORT reachable (${dur}ms)"
+  else
+    bad "tcp $SERVER_ADDR:$SERVER_PORT unreachable"
+  fi
+else
+  warn "server address unknown (install jq for parsing)"
+fi
+
+# ── 5. Прокси работают ───────────────────────────────────────────────
+hdr "proxy tunnel"
+proxy_ip=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT https://api.ipify.org 2>/dev/null)
+if [ -n "$proxy_ip" ]; then
+  ok "socks5 → $proxy_ip"
+  # geoip lookup
+  geo=$(curl -s --max-time 5 "https://ipapi.co/$proxy_ip/country_name/" 2>/dev/null)
+  [ -n "$geo" ] && info "country: $geo"
+else
+  bad "socks5 tunnel not responding"
+fi
+
+http_ip=$(curl -s --max-time 8 -x http://127.0.0.1:$HTTP_PORT https://api.ipify.org 2>/dev/null)
+if [ -n "$http_ip" ]; then
+  ok "http → $http_ip"
+else
+  bad "http proxy not responding"
+fi
+
+# ── 6. Split tunneling ───────────────────────────────────────────────
+hdr "routing split"
+direct_ip=$(curl -s --noproxy '*' --max-time 8 https://api.ipify.org 2>/dev/null)
+[ -n "$direct_ip" ] && info "your real ip: $direct_ip"
+
+# Российский сервис: должен увидеть наш реальный IP (= direct)
+ru_seen=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
+  https://api.ipify.org?ru 2>/dev/null)
+# ipify не российский, для .ru роутинга нужен именно RU-ресурс
+ru_seen=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
+  "https://api.2ip.ua/geo.json" 2>/dev/null)
+
+# Используем ifconfig.co с Host-заголовком российского зеркала — не надёжно.
+# Самый чистый способ: резолвим .ru домен и смотрим, через какой outbound ушло в логе xray,
+# либо используем ipinfo-сервисы, которые есть на .ru.
+
+# Проверка 1: запрос к yandex.ru — yandex не даёт public echo ip,
+# поэтому проверяем через to ip-api с параметрами
+ya_country=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
+  "https://ipwho.is/?output=json" 2>/dev/null | grep -oP '"country":"[^"]*"' | head -1 | cut -d'"' -f4)
+info "proxy exit country: ${ya_country:-unknown}"
+
+# Проверка 2: прямой резолв yandex через socks и смотрим HTTP-ответ
+# Yandex возвращает заголовок с IP клиента на некоторых эндпоинтах
+ya_ip=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
+  "https://yandex.ru/internet/api/v0/ip/" 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+if [ -n "$ya_ip" ]; then
+  if [ "$ya_ip" = "$direct_ip" ]; then
+    ok "yandex sees real ip $ya_ip  — .ru routed direct ✓"
+  else
+    bad "yandex sees $ya_ip (not $direct_ip) — .ru may be going through proxy"
+  fi
+else
+  warn "yandex ip-check unreachable"
+fi
+
+# ── 7. Geo файлы ─────────────────────────────────────────────────────
+hdr "geo files"
+for f in geoip.dat geosite.dat; do
+  path="/usr/local/share/xray/$f"
+  if [ -f "$path" ]; then
+    size=$(du -h "$path" | cut -f1)
+    age=$(( ($(date +%s) - $(stat -c %Y "$path")) / 3600 ))
+    ok "$f  ${D}($size, ${age}h old)${N}"
+  else
+    bad "$f missing"
+  fi
+done
+
+# ── 8. DNS ────────────────────────────────────────────────────────────
+hdr "dns"
+if [ -f /etc/resolv.conf ]; then
+  ns=$(grep '^nameserver' /etc/resolv.conf | awk '{print $2}' | tr '\n' ' ')
+  info "system: $ns"
+fi
+
+echo

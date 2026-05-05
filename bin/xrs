@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -e
+
+PROFILES_DIR="/etc/xray/profiles"
+CONFIG_LINK="/usr/local/etc/xray/config.json"
+
+current=""
+[ -L "$CONFIG_LINK" ] && current=$(basename "$(readlink -f "$CONFIG_LINK")" .json)
+
+choice=$(ls "$PROFILES_DIR"/*.json 2>/dev/null \
+  | xargs -n1 basename \
+  | sed 's/\.json$//' \
+  | fzf --prompt="xray> " --height=40% --reverse \
+        --header="current: ${current:-none}")
+
+[ -z "$choice" ] && exit 0
+[ "$choice" = "$current" ] && { echo "already on $choice"; exit 0; }
+
+sudo ln -sf "$PROFILES_DIR/$choice.json" "$CONFIG_LINK"
+sudo systemctl restart xray
+sleep 0.3
+
+if systemctl is-active --quiet xray; then
+  echo "✓ switched to $choice"
+else
+  echo "✗ xray failed, see: journalctl -u xray -n 30"
+  exit 1
+fi
