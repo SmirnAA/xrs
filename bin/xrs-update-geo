@@ -2,7 +2,7 @@
 set -euo pipefail
 
 GEO_DIR="/usr/local/share/xray"
-BASE_URL="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
+BASE_URL="https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download"
 BACKUP_DIR="$GEO_DIR/backup"
 TMP_DIR=$(mktemp -d)
 

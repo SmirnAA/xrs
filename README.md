@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # xrs
 
 Набор скриптов для управления [Xray-core](https://github.com/XTLS/Xray-core) на Linux: переключение профилей, добавление серверов из VLESS-ссылок, диагностика, обновление geo-файлов.
@@ -73,3 +74,6 @@ sudo xrs-update-geo
 /usr/local/etc/xray/
   config.json      — симлинк на активный профиль
 ```
+=======
+# xrs
+>>>>>>> 99de290d49ecc03ff73700caef086f097367d4e1
