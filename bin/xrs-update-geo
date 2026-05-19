@@ -28,38 +28,38 @@ echo "  geosite.dat: $(du -h "$TMP_DIR/geosite.dat" | cut -f1)"
 
 echo "${Y}[2/4]${N} Проверяю совместимость с конфигом..."
 # Валидация: запускаем xray test с новыми файлами
-cp "$TMP_DIR/geoip.dat" "$TMP_DIR/geosite.dat" "$GEO_DIR/"
+sudo cp "$TMP_DIR/geoip.dat" "$TMP_DIR/geosite.dat" "$GEO_DIR/"
 if xray run -test -c /usr/local/etc/xray/config.json 2>&1; then
   echo "  ${G}✓ конфиг валиден с новыми файлами${N}"
 else
   echo "  ${R}✗ конфиг не проходит валидацию — откат${N}"
   # Восстанавливаем из бэкапа если есть
   if [ -d "$BACKUP_DIR" ]; then
-    cp "$BACKUP_DIR/geoip.dat" "$BACKUP_DIR/geosite.dat" "$GEO_DIR/"
+    sudo cp "$BACKUP_DIR/geoip.dat" "$BACKUP_DIR/geosite.dat" "$GEO_DIR/"
     echo "  ${G}✓ откат из бэкапа выполнен${N}"
   fi
   exit 1
 fi
 
 echo "${Y}[3/4]${N} Сохраняю бэкап старых файлов..."
-mkdir -p "$BACKUP_DIR"
+sudo mkdir -p "$BACKUP_DIR"
 # Бэкап уже перезаписанных — берём из backup если есть, иначе текущие уже новые
 # Поправка: бэкапим ДО замены. Но мы уже скопировали для теста.
 # Значит бэкапим то что было — если backup существует, оставляем как есть.
 # При первом запуске бэкапа не будет, это нормально.
 
 echo "${Y}[4/4]${N} Перезапускаю xray..."
-if systemctl restart xray; then
+if sudo systemctl restart xray; then
   sleep 1
   if systemctl is-active --quiet xray; then
     echo "${G}✓ готово — xray работает с новыми geo-файлами${N}"
     # Сохраняем рабочие файлы как бэкап для следующего раза
-    cp "$GEO_DIR/geoip.dat" "$GEO_DIR/geosite.dat" "$BACKUP_DIR/"
+    sudo cp "$GEO_DIR/geoip.dat" "$GEO_DIR/geosite.dat" "$BACKUP_DIR/"
   else
     echo "${R}✗ xray не запустился — откат${N}"
     if [ -d "$BACKUP_DIR" ] && [ -f "$BACKUP_DIR/geoip.dat" ]; then
-      cp "$BACKUP_DIR/geoip.dat" "$BACKUP_DIR/geosite.dat" "$GEO_DIR/"
-      systemctl restart xray
+      sudo cp "$BACKUP_DIR/geoip.dat" "$BACKUP_DIR/geosite.dat" "$GEO_DIR/"
+      sudo systemctl restart xray
       echo "${G}✓ откат выполнен${N}"
     fi
     exit 1

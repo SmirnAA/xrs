@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROFILES_DIR="/etc/xray/profiles"
+CONFIG_LINK="/usr/local/etc/xray/config.json"
+
+R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; D=$'\e[2m'; N=$'\e[0m'
+die() { echo "${R}✗${N} $*" >&2; exit 1; }
+
+current=""
+[ -L "$CONFIG_LINK" ] && current=$(basename "$(readlink -f "$CONFIG_LINK")" .json)
+
+if [[ $# -ge 1 ]]; then
+  choice="$1"
+else
+  choice=$(ls "$PROFILES_DIR"/*.json 2>/dev/null \
+    | xargs -n1 basename \
+    | sed 's/\.json$//' \
+    | fzf --prompt="remove> " --height=40% --reverse \
+          --header="current: ${current:-none}") || exit 0
+fi
+
+[[ -z "$choice" ]] && exit 0
+
+target="$PROFILES_DIR/$choice.json"
+[[ ! -f "$target" ]] && die "profile '$choice' not found"
+[[ "$choice" == "$current" ]] && die "cannot remove active profile '$choice' — switch first with xrs"
+
+echo -n "${Y}remove profile '$choice'?${N} [y/N] "
+read -r confirm
+[[ "$confirm" != [yY] ]] && { echo "cancelled"; exit 0; }
+
+sudo rm "$target"
+echo "${G}✓${N} removed $choice"

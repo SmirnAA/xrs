@@ -4,6 +4,21 @@ set -e
 PROFILES_DIR="/etc/xray/profiles"
 CONFIG_LINK="/usr/local/etc/xray/config.json"
 
+R=$'\e[31m'; G=$'\e[32m'; N=$'\e[0m'
+
+# ── Subcommand dispatch ──────────────────────────────────────────────────
+if [[ $# -ge 1 ]]; then
+  cmd="$1"; shift
+  case "$cmd" in
+    add|rm|status|update-geo)
+      exec "xrs-$cmd" "$@" ;;
+    *)
+      echo "${R}✗${N} unknown command: $cmd" >&2
+      exit 1 ;;
+  esac
+fi
+
+# ── Profile switch ───────────────────────────────────────────────────────
 current=""
 [ -L "$CONFIG_LINK" ] && current=$(basename "$(readlink -f "$CONFIG_LINK")" .json)
 
@@ -21,8 +36,8 @@ sudo systemctl restart xray
 sleep 0.3
 
 if systemctl is-active --quiet xray; then
-  echo "✓ switched to $choice"
+  echo "${G}✓${N} switched to $choice"
 else
-  echo "✗ xray failed, see: journalctl -u xray -n 30"
+  echo "${R}✗${N} xray failed, see: journalctl -u xray -n 30"
   exit 1
 fi
