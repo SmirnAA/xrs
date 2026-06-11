@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROFILES_DIR="/etc/xray/profiles"
+SUBS_DIR="/etc/xray/subscriptions"
+CONFIG_LINK="/usr/local/etc/xray/config.json"
+XRS_LIB="${XRS_LIB:-/usr/local/lib/xrs}"
+
+# locate shared library (installed path, or repo-relative when run in place)
+if [[ -f "$XRS_LIB/build.sh" ]]; then
+  # shellcheck source=../lib/xrs/build.sh
+  source "$XRS_LIB/build.sh"
+elif [[ -f "$(dirname "$0")/../lib/xrs/build.sh" ]]; then
+  source "$(dirname "$0")/../lib/xrs/build.sh"
+else
+  echo "✗ xrs library not found (expected $XRS_LIB/build.sh)" >&2
+  exit 1
+fi
+
+R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; D=$'\e[2m'; N=$'\e[0m'
+die() { echo "${R}✗${N} $*" >&2; exit 1; }
+ok()  { echo "${G}✓${N} $*"; }
+info(){ echo "${D}$*${N}"; }
+
+usage() {
+  cat <<EOF
+Usage: xrs sub <command> [args]
+
+  add <url> [name]   Fetch a subscription and expand it into profiles
+  update [name]      Re-sync a subscription (all, if no name given)
+  rm [name]          Remove a subscription and its profiles
+  ls                 List subscriptions
+
+Profiles created from a subscription are named <sub>:<server> and show up
+in the 'xrs' switcher alongside regular profiles.
+EOF
+  exit "${1:-1}"
+}
+
+command -v jq   >/dev/null || die "jq is required (sudo apt install jq)"
+command -v curl >/dev/null || die "curl is required (sudo apt install curl)"
+
+active_profile() {
+  [ -L "$CONFIG_LINK" ] && basename "$(readlink -f "$CONFIG_LINK")" .json || true
+}
+
+# fetch a subscription URL and emit one URI per line (base64 or plaintext)
+fetch_uris() {
+  local url="$1" content decoded
+  content=$(curl -fsSL --max-time 30 "$url") || die "fetch failed: $url"
+
+  # base64 blob if it doesn't already look like a list of URIs
+  if [[ "$content" != *"://"* ]]; then
+    decoded=$(printf '%s' "$content" | tr -d '\n\r ' | tr '_-' '/+' | base64 -d 2>/dev/null) || decoded=""
+    [[ -n "$decoded" ]] && content="$decoded"
+  fi
+
+  printf '%s\n' "$content"
+}
+
+# expand a subscription into profiles; echoes the JSON list of created names.
+# args: <subname> <url>; reads URIs on stdin.
+expand_sub() {
+  local sub="$1"
+  local -A used=()
+  local -a created=()
+  local skipped=0 line base candidate name dest config
+
+  while IFS= read -r line; do
+    line="${line//$'\r'/}"
+    line="${line#"${line%%[![:space:]]*}"}"   # ltrim
+    [[ -z "$line" ]] && continue
+
+    if [[ "$line" != vless://* ]]; then
+      [[ "$line" == *"://"* ]] && skipped=$((skipped+1))
+      continue
+    fi
+
+    if ! xrs_parse_uri "$line" 2>/dev/null; then skipped=$((skipped+1)); continue; fi
+    if ! xrs_validate 2>/dev/null;        then skipped=$((skipped+1)); continue; fi
+
+    # per-server name: fragment, else host
+    base=$(xrs_sanitize_name "${VL_name:-$VL_address}")
+    [[ -z "$base" ]] && base="srv"
+    candidate="$base"
+    local i=2
+    while [[ -n "${used[$candidate]:-}" ]]; do candidate="$base-$i"; i=$((i+1)); done
+    used[$candidate]=1
+
+    name="$sub:$candidate"
+    dest="$PROFILES_DIR/$name.json"
+    if ! config=$(xrs_build_config 2>/dev/null); then skipped=$((skipped+1)); continue; fi
+    echo "$config" | sudo tee "$dest" >/dev/null
+    sudo chmod 644 "$dest"
+    created+=("$name")
+  done
+
+  echo "${#created[@]} server(s) imported${skipped:+, $skipped skipped (non-VLESS/invalid)}" >&2
+  printf '%s\n' "${created[@]}" | jq -R . | jq -sc .
+}
+
+cmd_add() {
+  local url="${1:-}" name="${2:-}"
+  [[ -z "$url" ]] && { echo -n "Subscription URL: "; read -r url; }
+  [[ -z "$url" ]] && die "subscription URL is required"
+  if [[ -z "$name" ]]; then read -rp "Subscription name: " name; fi
+  [[ -z "$name" ]] && die "subscription name is required"
+  name=$(xrs_sanitize_name "$name")
+
+  [[ -f "$SUBS_DIR/$name.json" ]] && die "subscription '$name' already exists (use: xrs sub update $name)"
+
+  info "fetching $url ..."
+  local profiles
+  profiles=$(fetch_uris "$url" | expand_sub "$name")
+  [[ "$profiles" == "[]" ]] && die "no VLESS servers found in subscription"
+
+  local manifest
+  manifest=$(jq -n --arg url "$url" --arg name "$name" --argjson profiles "$profiles" \
+    '{name:$name,url:$url,profiles:$profiles}')
+  echo "$manifest" | sudo tee "$SUBS_DIR/$name.json" >/dev/null
+  sudo chmod 644 "$SUBS_DIR/$name.json"
+
+  ok "subscription '$name' added"
+  info "switch with: xrs"
+}
+
+cmd_update_one() {
+  local name="$1"
+  local file="$SUBS_DIR/$name.json"
+  [[ -f "$file" ]] || die "subscription '$name' not found"
+
+  local url old_profiles new_profiles active
+  url=$(jq -r '.url' "$file")
+  old_profiles=$(jq -r '.profiles[]?' "$file")
+  active=$(active_profile)
+
+  info "updating '$name' from $url ..."
+  new_profiles=$(fetch_uris "$url" | expand_sub "$name")
+  [[ "$new_profiles" == "[]" ]] && die "no VLESS servers found — keeping old profiles for '$name'"
+
+  # delete profiles that existed before but are gone now (keep the active one)
+  local p
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    if ! echo "$new_profiles" | jq -e --arg p "$p" 'index($p)' >/dev/null; then
+      [[ "$p" == "$active" ]] && { info "kept active profile '$p' (no longer in subscription)"; continue; }
+      sudo rm -f "$PROFILES_DIR/$p.json"
+    fi
+  done <<< "$old_profiles"
+
+  local manifest
+  manifest=$(jq -n --arg url "$url" --arg name "$name" --argjson profiles "$new_profiles" \
+    '{name:$name,url:$url,profiles:$profiles}')
+  echo "$manifest" | sudo tee "$file" >/dev/null
+  sudo chmod 644 "$file"
+  ok "updated '$name'"
+}
+
+cmd_update() {
+  if [[ $# -ge 1 ]]; then
+    cmd_update_one "$1"
+    return
+  fi
+  shopt -s nullglob
+  local files=("$SUBS_DIR"/*.json) f
+  shopt -u nullglob
+  (( ${#files[@]} == 0 )) && die "no subscriptions to update"
+  for f in "${files[@]}"; do
+    cmd_update_one "$(basename "$f" .json)"
+  done
+}
+
+cmd_rm() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    name=$(ls "$SUBS_DIR"/*.json 2>/dev/null | xargs -n1 basename | sed 's/\.json$//' \
+      | fzf --prompt="remove sub> " --height=40% --reverse) || exit 0
+  fi
+  [[ -z "$name" ]] && exit 0
+  local file="$SUBS_DIR/$name.json"
+  [[ -f "$file" ]] || die "subscription '$name' not found"
+
+  local active p
+  active=$(active_profile)
+  while IFS= read -r p; do
+    [[ "$p" == "$active" ]] && die "active profile '$p' belongs to '$name' — switch first with xrs"
+  done < <(jq -r '.profiles[]?' "$file")
+
+  echo -n "${Y}remove subscription '$name' and its profiles?${N} [y/N] "
+  read -r confirm
+  [[ "$confirm" != [yY] ]] && { echo "cancelled"; exit 0; }
+
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    sudo rm -f "$PROFILES_DIR/$p.json"
+  done < <(jq -r '.profiles[]?' "$file")
+  sudo rm -f "$file"
+  ok "removed subscription '$name'"
+}
+
+cmd_ls() {
+  shopt -s nullglob
+  local files=("$SUBS_DIR"/*.json) f
+  shopt -u nullglob
+  (( ${#files[@]} == 0 )) && { info "no subscriptions"; return; }
+  for f in "${files[@]}"; do
+    local n u c
+    n=$(jq -r '.name' "$f")
+    u=$(jq -r '.url' "$f")
+    c=$(jq -r '.profiles | length' "$f")
+    printf '%s%s%s  %s(%s servers)%s\n  %s%s%s\n' "$Y" "$n" "$N" "$D" "$c" "$N" "$D" "$u" "$N"
+  done
+}
+
+# ── Dispatch ───────────────────────────────────────────────────────────────
+
+mkdir -p "$SUBS_DIR" 2>/dev/null || sudo mkdir -p "$SUBS_DIR"
+
+[[ $# -lt 1 ]] && usage
+sub="$1"; shift
+case "$sub" in
+  add)    cmd_add    "$@" ;;
+  update) cmd_update "$@" ;;
+  rm)     cmd_rm     "$@" ;;
+  ls)     cmd_ls     "$@" ;;
+  -h|--help|help) usage 0 ;;
+  *)      die "unknown subcommand: $sub (try: xrs sub help)" ;;
+esac

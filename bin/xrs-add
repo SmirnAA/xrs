@@ -2,6 +2,18 @@
 set -euo pipefail
 
 PROFILES_DIR="/etc/xray/profiles"
+XRS_LIB="${XRS_LIB:-/usr/local/lib/xrs}"
+
+# locate shared library (installed path, or repo-relative when run in place)
+if [[ -f "$XRS_LIB/build.sh" ]]; then
+  # shellcheck source=../lib/xrs/build.sh
+  source "$XRS_LIB/build.sh"
+elif [[ -f "$(dirname "$0")/../lib/xrs/build.sh" ]]; then
+  source "$(dirname "$0")/../lib/xrs/build.sh"
+else
+  echo "✗ xrs library not found (expected $XRS_LIB/build.sh)" >&2
+  exit 1
+fi
 
 R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; D=$'\e[2m'; N=$'\e[0m'
 die() { echo "${R}✗${N} $*" >&2; exit 1; }
@@ -21,7 +33,7 @@ EOF
   exit 1
 }
 
-# ── Parse URI ────────────────────────────────────────────────────────────
+# ── Read URI ─────────────────────────────────────────────────────────────
 
 if [[ $# -lt 1 ]]; then
   echo -n "Paste VLESS key: "
@@ -31,162 +43,39 @@ else
 fi
 
 [[ -z "$uri" ]] && usage
-[[ "$uri" != vless://* ]] && die "not a VLESS URI (must start with vless://)"
 
-# strip scheme
-rest="${uri#vless://}"
+# ── Parse & validate ───────────────────────────────────────────────────────
 
-# fragment = profile name
-fragment=""
-if [[ "$rest" == *"#"* ]]; then
-  fragment="${rest##*#}"
-  fragment=$(printf '%b' "${fragment//%/\\x}")  # url-decode
-  rest="${rest%%#*}"
-fi
-
-# query string
-query=""
-if [[ "$rest" == *"?"* ]]; then
-  query="${rest#*\?}"
-  rest="${rest%%\?*}"
-fi
-
-# uuid@host:port
-uuid="${rest%%@*}"
-hostport="${rest#*@}"
-address="${hostport%%:*}"
-port="${hostport##*:}"
-
-# parse query params into associative array
-declare -A params
-IFS='&' read -ra pairs <<< "$query"
-for pair in "${pairs[@]}"; do
-  key="${pair%%=*}"
-  val="${pair#*=}"
-  params["$key"]="$val"
-done
+xrs_parse_uri "$uri" || die "could not parse URI"
 
 # profile name: CLI arg > fragment > prompt
-name="${2:-$fragment}"
+name="${2:-$VL_name}"
 if [[ -z "$name" ]]; then
   read -rp "Profile name: " name
 fi
 [[ -z "$name" ]] && die "profile name is required"
-name="${name,,}" # lowercase
-name="${name//[^a-z0-9_-]/_}" # sanitize
+name=$(xrs_sanitize_name "$name")
 
-# ── Validate ─────────────────────────────────────────────────────────────
-
-errors=()
-
-# UUID: 8-4-4-4-12 hex
-uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-[[ "$uuid" =~ $uuid_re ]] || errors+=("invalid UUID: $uuid")
-
-# address
-[[ -z "$address" ]] && errors+=("address is empty")
-
-# port
-[[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || errors+=("invalid port: $port")
-
-# security
-security="${params[security]:-none}"
-
-if [[ "$security" == "reality" ]]; then
-  [[ -z "${params[pbk]:-}" ]] && errors+=("reality requires pbk (public key)")
-  [[ -z "${params[sni]:-}" ]] && errors+=("reality requires sni (server name)")
-fi
-
-# check for existing profile
-[[ -f "$PROFILES_DIR/$name.json" ]] && errors+=("profile '$name' already exists")
-
-if (( ${#errors[@]} > 0 )); then
-  echo "${R}Validation failed:${N}" >&2
-  for e in "${errors[@]}"; do echo "  ${R}•${N} $e" >&2; done
+if ! xrs_validate; then
+  echo "${R}Validation failed.${N}" >&2
   exit 1
 fi
 
-# ── Extract params ───────────────────────────────────────────────────────
+[[ -f "$PROFILES_DIR/$name.json" ]] && die "profile '$name' already exists"
 
-network="${params[type]:-tcp}"
-fingerprint="${params[fp]:-chrome}"
-sni="${params[sni]:-}"
-pbk="${params[pbk]:-}"
-sid="${params[sid]:-}"
-flow="${params[flow]:-}"
+# ── Build ──────────────────────────────────────────────────────────────────
 
-# ── Build config with jq ────────────────────────────────────────────────
-
-command -v jq >/dev/null || die "jq is required (sudo apt install jq)"
-
-# user object
-user_json=$(jq -n --arg id "$uuid" --arg flow "$flow" \
-  'if $flow == "" then {id:$id,encryption:"none"} else {id:$id,encryption:"none",flow:$flow} end')
-
-# streamSettings
-stream_json=$(jq -n --arg net "$network" '{network:$net}')
-
-if [[ "$security" == "reality" ]]; then
-  stream_json=$(echo "$stream_json" | jq \
-    --arg sni "$sni" --arg pbk "$pbk" --arg sid "$sid" --arg fp "$fingerprint" \
-    '. + {security:"reality",realitySettings:{serverName:$sni,publicKey:$pbk,shortId:$sid,fingerprint:$fp}}')
-elif [[ "$security" == "tls" ]]; then
-  stream_json=$(echo "$stream_json" | jq \
-    --arg sni "$sni" --arg fp "$fingerprint" \
-    '. + {security:"tls",tlsSettings:{serverName:$sni,fingerprint:$fp}}')
-fi
-
-if [[ "$network" == "ws" ]]; then
-  ws_host="${params[host]:-$sni}"
-  ws_path="${params[path]:-/}"
-  stream_json=$(echo "$stream_json" | jq \
-    --arg path "$ws_path" --arg host "$ws_host" \
-    '. + {wsSettings:{path:$path,headers:{Host:$host}}}')
-fi
-
-if [[ "$network" == "grpc" ]]; then
-  svc="${params[serviceName]:-}"
-  stream_json=$(echo "$stream_json" | jq --arg svc "$svc" '. + {grpcSettings:{serviceName:$svc}}')
-fi
-
-# full config
-config=$(jq -n \
-  --arg addr "$address" \
-  --argjson port "$port" \
-  --argjson user "$user_json" \
-  --argjson stream "$stream_json" \
-'{
-  log: {loglevel:"warning"},
-  dns: {servers:["1.1.1.1","8.8.8.8"],queryStrategy:"UseIP"},
-  inbounds: [
-    {tag:"socks-in",listen:"127.0.0.1",port:10808,protocol:"socks",settings:{udp:true,auth:"noauth"},sniffing:{enabled:true,destOverride:["http","tls"]}},
-    {tag:"http-in",listen:"127.0.0.1",port:10809,protocol:"http",sniffing:{enabled:true,destOverride:["http","tls"]}}
-  ],
-  outbounds: [
-    {tag:"proxy",protocol:"vless",settings:{vnext:[{address:$addr,port:$port,users:[$user]}]},streamSettings:$stream},
-    {tag:"direct",protocol:"freedom",settings:{domainStrategy:"UseIP"}},
-    {tag:"block",protocol:"blackhole"}
-  ],
-  routing: {
-    domainStrategy:"IPIfNonMatch",
-    rules: [
-      {type:"field",ip:["geoip:private"],outboundTag:"direct"},
-      {type:"field",domain:["geosite:category-ru","geosite:ru-available-only-inside","regexp:.*\\.ru$"],outboundTag:"direct"},
-      {type:"field",ip:["geoip:ru"],outboundTag:"direct"},
-      {type:"field",network:"tcp,udp",outboundTag:"proxy"}
-    ]
-  }
-}')
+config=$(xrs_build_config) || die "failed to build config"
 
 # ── Preview ──────────────────────────────────────────────────────────────
 
 echo
 echo "${Y}Profile: ${N}$name"
-echo "${D}server:  ${N}$address:$port"
-echo "${D}uuid:    ${N}${uuid:0:8}...${uuid: -4}"
-echo "${D}security:${N} $security"
-[[ -n "$sni" ]]  && echo "${D}sni:     ${N}$sni"
-[[ -n "$flow" ]] && echo "${D}flow:    ${N}$flow"
+echo "${D}server:  ${N}$VL_address:$VL_port"
+echo "${D}uuid:    ${N}${VL_uuid:0:8}...${VL_uuid: -4}"
+echo "${D}security:${N} $VL_security"
+[[ -n "$VL_sni" ]]  && echo "${D}sni:     ${N}$VL_sni"
+[[ -n "$VL_flow" ]] && echo "${D}flow:    ${N}$VL_flow"
 echo
 
 # ── Save ─────────────────────────────────────────────────────────────────
