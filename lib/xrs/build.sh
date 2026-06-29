@@ -85,9 +85,15 @@ xrs_validate() {
 }
 
 # sanitize an arbitrary string into a safe profile-name component
+# Allowed: [a-z0-9_-] plus any non-ASCII char (emoji, accented/CJK/Cyrillic
+# letters, …); every other ASCII char becomes '_'. The brackets below only
+# match ASCII bytes, so multi-byte UTF-8 sequences (all bytes >= 0x80) pass
+# through untouched regardless of locale — this is what preserves emoji.
 xrs_sanitize_name() {
-  local n="${1,,}"            # lowercase
-  n="${n//[^a-z0-9_-]/_}"     # keep [a-z0-9_-], rest -> _
+  local n="${1,,}"                       # lowercase ASCII
+  n="${n//[[:cntrl:]]/_}"                # control chars -> _
+  local bad=' !"#$%&'\''()*+,./:;<=>?@[\]^`{|}~'  # unsafe ASCII punctuation/space
+  n="${n//[$bad]/_}"                     # rest -> _, keeping a-z 0-9 _ - and Unicode
   printf '%s' "$n"
 }
 
