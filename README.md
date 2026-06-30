@@ -1,99 +1,133 @@
 # xrs
 
-Набор скриптов для управления [Xray-core](https://github.com/XTLS/Xray-core) на Linux: переключение профилей, добавление серверов из VLESS-ссылок и подписок, диагностика, обновление geo-файлов.
+A set of bash scripts for managing [Xray-core](https://github.com/XTLS/Xray-core) on Linux. Each server is stored as a separate profile, and switching between them takes a single command via `fzf`. The generated config uses split-routing: Russian traffic goes direct, everything else through the proxy.
 
-## Зависимости
+## Features
+
+- **Server profiles** — add from VLESS links (`vless://`) and subscriptions (base64 or plaintext).
+- **Fast switching** — interactive selection via `fzf` with automatic xray restart.
+- **Split-routing out of the box** — `*.ru`, `geoip:ru`, `geosite:category-ru` go direct, everything else through VLESS.
+- **Diagnostics** — service status, server reachability, tunnel health, split-routing check, geo files, DNS.
+- **Geo-file updates** — with config-compatibility check and automatic rollback.
+
+Supports `reality`, `tls`, and the `tcp` / `ws` / `grpc` transports.
+
+## Requirements
+
+- Linux with systemd.
+- [Xray-core](https://github.com/XTLS/Xray-core/releases), installed and running as a systemd service named `xray`.
+- `jq`, `fzf`, `curl`:
+
+  ```bash
+  sudo apt install jq fzf curl
+  ```
+
+## Installation
 
 ```bash
-sudo apt install jq fzf curl
-```
-
-[Xray-core](https://github.com/XTLS/Xray-core/releases) должен быть установлен и настроен как systemd-сервис `xray`.
-
-## Установка
-
-```bash
-git clone git@github.com:SmirnAA/xrs.git
+git clone https://github.com/SmirnAA/xrs.git
 cd xrs
 sudo ./install.sh
 ```
 
-Скрипт скопирует утилиты в `/usr/local/bin/` и создаст директорию для профилей.
+The script copies the utilities to `/usr/local/bin/`, the shared library to `/usr/local/lib/xrs/`, the bash completion file, and creates the directories for profiles and subscriptions.
 
-## Быстрый старт
+## Quick start
 
-### 1. Добавить сервер
+### 1. Add a server
 
 ```bash
 xrs-add 'vless://uuid@host:443?security=reality&pbk=...&sni=example.com#finland'
 ```
 
-Или без аргументов — скрипт попросит вставить ссылку и ввести имя:
+Or with no arguments — the script will ask you to paste the link and enter a name:
 
 ```bash
 xrs-add
 ```
 
-### 2. Добавить подписку
+### 2. Add a subscription
 
 ```bash
 xrs sub add 'https://example.com/sub/token' netherlands
 ```
 
-Скрипт скачает подписку (base64 или plaintext), развернёт каждый VLESS-сервер в отдельный профиль `netherlands:<имя>` и пропустит ссылки других протоколов (vmess/ss/trojan).
+The script downloads the subscription (base64 or plaintext), expands each VLESS server into a separate profile `netherlands:<name>`, and skips links of other protocols (vmess/ss/trojan).
 
 ```bash
-xrs sub update [name]   # пере-синхронизировать (все, если без имени)
-xrs sub rm [name]       # удалить подписку и её профили
-xrs sub ls              # список подписок
+xrs sub update [name]   # re-sync (all, if no name given)
+xrs sub rm [name]       # remove a subscription and its profiles
+xrs sub ls              # list subscriptions
 ```
 
-При обновлении профили серверов, исчезнувших из подписки, удаляются (активный — сохраняется).
+On update, profiles for servers that disappeared from the subscription are removed (the active one is kept).
 
-### 3. Переключить профиль
+### 3. Switch profile
 
 ```bash
 xrs
 ```
 
-Откроется интерактивный выбор через fzf. Профили подписок видны наравне с обычными. После выбора xray перезапустится автоматически.
+An interactive `fzf` picker opens. Subscription profiles appear alongside regular ones. After you pick one, xray restarts automatically.
 
-### 4. Проверить статус
+Remove a profile:
+
+```bash
+xrs-rm [name]   # without a name — pick via fzf
+```
+
+### 4. Check status
 
 ```bash
 xrs-status
 ```
 
-Покажет: активный профиль, состояние сервиса, порты, связь с сервером, работу прокси, split-routing, geo-файлы и DNS.
+Shows: active profile, service state, ports, server reachability, proxy operation, split-routing, geo files, and DNS.
 
-### 5. Обновить geo-файлы
+### 5. Update geo files
 
 ```bash
 sudo xrs-update-geo
 ```
 
-Скачает свежие `geoip.dat` и `geosite.dat`, проверит совместимость с конфигом и перезапустит xray. При ошибке — автоматический откат.
+Downloads fresh `geoip.dat` and `geosite.dat`, verifies they are compatible with the config, and restarts xray. On failure — automatic rollback.
 
-## Структура
+## How it works
+
+After you switch a profile, Xray listens locally on:
+
+| Protocol | Address            |
+| -------- | ------------------ |
+| SOCKS5   | `127.0.0.1:10808`  |
+| HTTP     | `127.0.0.1:10809`  |
+
+Point your browser or system at these addresses. Routing works as a split-tunnel:
+
+- private networks, `geoip:ru`, `geosite:category-ru`, and `*.ru` domains go **direct**;
+- all other traffic goes **through the VLESS proxy**.
+
+Routing geo files are sourced from [runetfreedom/russia-v2ray-rules-dat](https://github.com/runetfreedom/russia-v2ray-rules-dat).
+
+## Layout
 
 ```
 /usr/local/bin/
-  xrs              — переключение профилей (fzf) + диспетчер подкоманд
-  xrs-add          — добавление VLESS-сервера
-  xrs-rm           — удаление профиля
-  xrs-sub          — управление подписками (add/update/rm/ls)
-  xrs-status       — диагностика
-  xrs-update-geo   — обновление geo-файлов
+  xrs              — profile switcher (fzf) + subcommand dispatcher
+  xrs-add          — add a VLESS server
+  xrs-rm           — remove a profile
+  xrs-sub          — manage subscriptions (add/update/rm/ls)
+  xrs-status       — diagnostics
+  xrs-update-geo   — update geo files
 
 /usr/local/lib/xrs/
-  build.sh         — общая логика парсинга VLESS-URI и сборки конфига
+  build.sh         — shared logic for parsing VLESS URIs and building the config
 
 /etc/xray/profiles/
-  *.json           — профили (xrs-add и развёрнутые подписки)
+  *.json           — profiles (from xrs-add and expanded subscriptions)
 
 /etc/xray/subscriptions/
-  *.json           — манифесты подписок (url + список профилей)
+  *.json           — subscription manifests (url + list of profiles)
 
 /usr/local/etc/xray/
-  config.json      — симлинк на активный профиль
+  config.json      — symlink to the active profile
 ```
