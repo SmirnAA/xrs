@@ -14,15 +14,17 @@ Supports `reality`, `tls`, and the `tcp` / `ws` / `grpc` transports.
 
 ## Requirements
 
-- Linux with systemd.
-- [Xray-core](https://github.com/XTLS/Xray-core/releases), installed and running as a systemd service named `xray`.
-- `jq`, `fzf`, `curl`:
-
-  ```bash
-  sudo apt install jq fzf curl
-  ```
+Linux with systemd. Everything else (`jq`, `fzf`, `curl`, Xray-core, geo files) is installed automatically by `install.sh`.
 
 ## Installation
+
+One command, no clone needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SmirnAA/xrs/main/install.sh | sudo bash
+```
+
+Or from a clone:
 
 ```bash
 git clone https://github.com/SmirnAA/xrs.git
@@ -30,7 +32,12 @@ cd xrs
 sudo ./install.sh
 ```
 
-The script copies the utilities to `/usr/local/bin/`, the shared library to `/usr/local/lib/xrs/`, the bash completion file, and creates the directories for profiles and subscriptions.
+The installer is idempotent (safe to re-run) and:
+
+- installs missing dependencies (`jq`, `fzf`, `curl`) via the system package manager (apt/dnf/yum/pacman/zypper/apk);
+- installs [Xray-core](https://github.com/XTLS/Xray-core) via the official XTLS script if it is not present (systemd service `xray`);
+- downloads the routing geo files from [runetfreedom](https://github.com/runetfreedom/russia-v2ray-rules-dat) (~90 MB — required for split-routing);
+- copies the utilities to `/usr/local/bin/`, the shared library to `/usr/local/lib/xrs/`, the bash completion file, and creates the directories for profiles and subscriptions.
 
 ## Quick start
 
