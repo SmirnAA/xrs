@@ -7,6 +7,11 @@
 #
 # Parsed fields are exposed as globals prefixed VL_ so callers can build previews.
 
+# percent-decode (RFC 3986); leaves '+' alone — it is literal outside forms
+xrs_urldecode() {
+  printf '%b' "${1//%/\\x}"
+}
+
 # shellcheck disable=SC2034  # VL_* are consumed by callers
 xrs_parse_uri() {
   local uri="$1" rest hostport fragment query key val pair
@@ -22,8 +27,7 @@ xrs_parse_uri() {
 
   # fragment = profile name
   if [[ "$rest" == *"#"* ]]; then
-    fragment="${rest##*#}"
-    fragment=$(printf '%b' "${fragment//%/\\x}")  # url-decode
+    fragment=$(xrs_urldecode "${rest##*#}")
     rest="${rest%%#*}"
     VL_name="$fragment"
   fi
@@ -47,7 +51,7 @@ xrs_parse_uri() {
   for pair in "${pairs[@]}"; do
     [[ -z "$pair" ]] && continue
     key="${pair%%=*}"
-    val="${pair#*=}"
+    val=$(xrs_urldecode "${pair#*=}")
     VL_params["$key"]="$val"
   done
 

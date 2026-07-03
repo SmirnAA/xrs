@@ -95,8 +95,15 @@ expand_sub() {
     created+=("$name")
   done
 
-  echo "${#created[@]} server(s) imported${skipped:+, $skipped skipped (non-VLESS/invalid)}" >&2
-  printf '%s\n' "${created[@]}" | jq -R . | jq -sc .
+  local msg="${#created[@]} server(s) imported"
+  (( skipped > 0 )) && msg+=", $skipped skipped (non-VLESS/invalid)"
+  echo "$msg" >&2
+
+  if (( ${#created[@]} > 0 )); then
+    printf '%s\n' "${created[@]}" | jq -R . | jq -sc .
+  else
+    echo '[]'
+  fi
 }
 
 cmd_add() {

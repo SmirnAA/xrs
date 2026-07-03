@@ -107,25 +107,12 @@ hdr "routing split"
 direct_ip=$(curl -s --noproxy '*' --max-time 8 https://api.ipify.org 2>/dev/null)
 [ -n "$direct_ip" ] && info "your real ip: $direct_ip"
 
-# Российский сервис: должен увидеть наш реальный IP (= direct)
-ru_seen=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
-  https://api.ipify.org?ru 2>/dev/null)
-# ipify не российский, для .ru роутинга нужен именно RU-ресурс
-ru_seen=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
-  "https://api.2ip.ua/geo.json" 2>/dev/null)
-
-# Используем ifconfig.co с Host-заголовком российского зеркала — не надёжно.
-# Самый чистый способ: резолвим .ru домен и смотрим, через какой outbound ушло в логе xray,
-# либо используем ipinfo-сервисы, которые есть на .ru.
-
-# Проверка 1: запрос к yandex.ru — yandex не даёт public echo ip,
-# поэтому проверяем через to ip-api с параметрами
-ya_country=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
+# страна выхода через прокси
+proxy_country=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
   "https://ipwho.is/?output=json" 2>/dev/null | grep -oP '"country":"[^"]*"' | head -1 | cut -d'"' -f4)
-info "proxy exit country: ${ya_country:-unknown}"
+info "proxy exit country: ${proxy_country:-unknown}"
 
-# Проверка 2: прямой резолв yandex через socks и смотрим HTTP-ответ
-# Yandex возвращает заголовок с IP клиента на некоторых эндпоинтах
+# .ru должен идти напрямую: yandex должен видеть наш реальный IP
 ya_ip=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
   "https://yandex.ru/internet/api/v0/ip/" 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
 if [ -n "$ya_ip" ]; then
