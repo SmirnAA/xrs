@@ -133,6 +133,13 @@ xrs_build_config() {
     stream_json=$(echo "$stream_json" | jq --arg svc "$svc" '. + {grpcSettings:{serviceName:$svc}}')
   fi
 
+  # TCP keepalive on the proxy outbound: XTLS-Vision opens one TCP per stream
+  # (no mux), and relay/NAT hops silently black-hole idle flows without a RST.
+  # Without keepalive those dead sockets pile up and get reused → requests hang
+  # until the app times out. SO_KEEPALIVE lets the OS detect and drop them fast.
+  stream_json=$(echo "$stream_json" | jq \
+    '. + {sockopt:{tcpKeepAliveIdle:30,tcpKeepAliveInterval:15}}')
+
   jq -n \
     --arg addr "$VL_address" \
     --argjson port "$VL_port" \
@@ -140,6 +147,7 @@ xrs_build_config() {
     --argjson stream "$stream_json" \
   '{
     log: {loglevel:"warning"},
+    policy: {levels:{"0":{handshake:4,connIdle:120,uplinkOnly:1,downlinkOnly:1}}},
     dns: {servers:["1.1.1.1","8.8.8.8"],queryStrategy:"UseIP"},
     inbounds: [
       {tag:"socks-in",listen:"127.0.0.1",port:10808,protocol:"socks",settings:{udp:true,auth:"noauth"},sniffing:{enabled:true,destOverride:["http","tls"]}},
