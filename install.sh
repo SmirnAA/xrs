@@ -88,10 +88,20 @@ fi
 systemctl enable xray >/dev/null 2>&1 || true
 
 # ── 4. Geo files (runetfreedom — the config needs its extended categories) ─
+# Robust fetch: GitHub release downloads are often throttled here, so plain
+# curl hangs forever mid-transfer. Abort on stall (speed < 30KB/s for 15s) and
+# retry with resume, so a stalled transfer fails/recovers instead of hanging.
+geo_fetch() {
+  local url="$1" out="$2"
+  rm -f "$out"
+  curl -fL -C - --connect-timeout 10 --speed-limit 30000 --speed-time 15 \
+       --retry 5 --retry-delay 2 --retry-all-errors -o "$out" "$url"
+}
+
 step "installing geo files"
 mkdir -p "$GEO_DIR"
 for f in geoip.dat geosite.dat; do
-  curl -fsSL -o "$GEO_DIR/$f.new" "$GEO_URL/$f" || die "failed to download $f"
+  geo_fetch "$GEO_URL/$f" "$GEO_DIR/$f.new" || die "failed to download $f"
   size=$(stat -c%s "$GEO_DIR/$f.new")
   (( size > 100000 )) || die "$f looks truncated (${size}B)"
   mv "$GEO_DIR/$f.new" "$GEO_DIR/$f"

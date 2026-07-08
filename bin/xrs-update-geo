@@ -12,6 +12,23 @@ R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; N=$'\e[0m'
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
+# Устойчивая загрузка: GitHub-релизы тут часто троттлятся, и обычный curl
+# висит на середине. Обрываем при стагнации (< 30КБ/с в течение 15с), повторяем
+# с докачкой, и при неудаче пробуем через локальный прокси xray (socks 10808).
+geo_fetch() {
+  local url="$1" out="$2"
+  local common=(-fL -C - --connect-timeout 10 --speed-limit 30000 --speed-time 15
+                --retry 5 --retry-delay 2 --retry-all-errors)
+  rm -f "$out"
+  curl "${common[@]}" -o "$out" "$url" && return 0
+  if ss -tlnH "sport = :10808" 2>/dev/null | grep -q LISTEN; then
+    echo "  прямая загрузка не идёт — пробую через прокси (127.0.0.1:10808)"
+    rm -f "$out"
+    curl "${common[@]}" -x socks5h://127.0.0.1:10808 -o "$out" "$url" && return 0
+  fi
+  return 1
+}
+
 restore_backup() {
   if [ -f "$BACKUP_DIR/geoip.dat" ] && [ -f "$BACKUP_DIR/geosite.dat" ]; then
     sudo cp "$BACKUP_DIR/geoip.dat" "$BACKUP_DIR/geosite.dat" "$GEO_DIR/"
@@ -22,8 +39,8 @@ restore_backup() {
 }
 
 echo "${Y}[1/4]${N} Скачиваю новые geo-файлы..."
-curl -fsSL -o "$TMP_DIR/geoip.dat"   "$BASE_URL/geoip.dat"   || { echo "${R}✗ ошибка загрузки geoip.dat${N}";   exit 1; }
-curl -fsSL -o "$TMP_DIR/geosite.dat" "$BASE_URL/geosite.dat" || { echo "${R}✗ ошибка загрузки geosite.dat${N}"; exit 1; }
+geo_fetch "$BASE_URL/geoip.dat"   "$TMP_DIR/geoip.dat"   || { echo "${R}✗ ошибка загрузки geoip.dat${N}";   exit 1; }
+geo_fetch "$BASE_URL/geosite.dat" "$TMP_DIR/geosite.dat" || { echo "${R}✗ ошибка загрузки geosite.dat${N}"; exit 1; }
 
 # Проверяем что файлы не пустые и похожи на protobuf
 for f in geoip.dat geosite.dat; do
