@@ -102,6 +102,41 @@ else
   bad "http proxy not responding"
 fi
 
+# ── 5b. Tunnel stability ─────────────────────────────────────────────
+# A long-running xray accumulates dead/black-holed upstream sockets that get
+# reused and hang until timeout — a fresh process is always healthy. This probe
+# hits a fixed IP (DNS excluded) several times: intermittent stalls here mean
+# the process has degraded and just needs a restart, not a different server.
+hdr "tunnel stability"
+total=6; stall=0
+for _ in $(seq 1 $total); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 \
+    -x socks5h://127.0.0.1:$SOCKS_PORT \
+    --resolve api.ipify.org:443:104.26.12.205 https://api.ipify.org 2>/dev/null)
+  [ "$code" = "200" ] || stall=$((stall + 1))
+done
+if [ "$stall" -eq 0 ]; then
+  ok "$total/$total requests ok — tunnel healthy"
+elif [ "$stall" -lt "$total" ]; then
+  bad "$stall/$total requests stalled — process degraded; restart: sudo systemctl restart xray"
+else
+  bad "$total/$total requests stalled — tunnel down (switch profile or restart xray)"
+fi
+
+# piled-up half-closed sockets = accumulating dead upstream flows
+if [ -n "$SERVER_ADDR" ]; then
+  fw=$(ss -tnH state fin-wait-1 dst "$SERVER_ADDR" 2>/dev/null | wc -l)
+  scope="to server"
+else
+  fw=$(ss -tnH state fin-wait-1 2>/dev/null | wc -l)
+  scope="system-wide"
+fi
+if [ "$fw" -gt 20 ]; then
+  warn "$fw sockets in FIN-WAIT-1 ($scope) — dead flows piling up, restart recommended"
+else
+  info "FIN-WAIT-1 sockets ($scope): $fw"
+fi
+
 # ── 6. Split tunneling ───────────────────────────────────────────────
 hdr "routing split"
 direct_ip=$(curl -s --noproxy '*' --max-time 8 https://api.ipify.org 2>/dev/null)
