@@ -92,9 +92,19 @@ xrs_validate() {
 # Allowed: [a-z0-9_-] plus any non-ASCII char (emoji, accented/CJK/Cyrillic
 # letters, …); every other ASCII char becomes '_'. The brackets below only
 # match ASCII bytes, so multi-byte UTF-8 sequences (all bytes >= 0x80) pass
-# through untouched regardless of locale — this is what preserves emoji.
+# through untouched regardless of locale.
+#
+# Flag emoji for Germany/Russia/USA/Armenia/France are first rewritten to
+# their ASCII country codes (de/ru/us/am/fr) so subscription names carry
+# readable labels instead of the raw regional-indicator pairs.
 xrs_sanitize_name() {
-  local n="${1,,}"                       # lowercase ASCII
+  local n="$1"
+  n="${n//$'\U0001F1E9\U0001F1EA'/de}"   # 🇩🇪 -> de
+  n="${n//$'\U0001F1F7\U0001F1FA'/ru}"   # 🇷🇺 -> ru
+  n="${n//$'\U0001F1FA\U0001F1F8'/us}"   # 🇺🇸 -> us
+  n="${n//$'\U0001F1E6\U0001F1F2'/am}"   # 🇦🇲 -> am
+  n="${n//$'\U0001F1EB\U0001F1F7'/fr}"   # 🇫🇷 -> fr
+  n="${n,,}"                             # lowercase ASCII
   n="${n//[[:cntrl:]]/_}"                # control chars -> _
   local bad=' !"#$%&'\''()*+,./:;<=>?@[\]^`{|}~'  # unsafe ASCII punctuation/space
   n="${n//[$bad]/_}"                     # rest -> _, keeping a-z 0-9 _ - and Unicode
