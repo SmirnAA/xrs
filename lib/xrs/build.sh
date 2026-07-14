@@ -143,6 +143,23 @@ xrs_build_config() {
     stream_json=$(echo "$stream_json" | jq --arg svc "$svc" '. + {grpcSettings:{serviceName:$svc}}')
   fi
 
+  if [[ "$VL_network" == "xhttp" ]]; then
+    local xh_path="${VL_params[path]:-/}" xh_host="${VL_params[host]:-}"
+    local xh_mode="${VL_params[mode]:-auto}" xh_extra="${VL_params[extra]:-}"
+    stream_json=$(echo "$stream_json" | jq \
+      --arg path "$xh_path" --arg host "$xh_host" --arg mode "$xh_mode" \
+      '. + {xhttpSettings:({path:$path,mode:$mode} + (if $host != "" then {host:$host} else {} end))}')
+    # 'extra' is a JSON blob; some panels form-encode it, turning spaces into '+'
+    if [[ -n "$xh_extra" ]]; then
+      if ! printf '%s' "$xh_extra" | jq -e . >/dev/null 2>&1; then
+        xh_extra="${xh_extra//+/ }"
+      fi
+      if printf '%s' "$xh_extra" | jq -e . >/dev/null 2>&1; then
+        stream_json=$(echo "$stream_json" | jq --argjson extra "$xh_extra" '.xhttpSettings.extra = $extra')
+      fi
+    fi
+  fi
+
   # TCP keepalive on the proxy outbound: XTLS-Vision opens one TCP per stream
   # (no mux), and relay/NAT hops silently black-hole idle flows without a RST.
   # Without keepalive those dead sockets pile up and get reused → requests hang
