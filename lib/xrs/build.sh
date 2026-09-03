@@ -17,7 +17,7 @@ xrs_parse_uri() {
   local uri="$1" rest hostport fragment query key val pair
 
   VL_uuid="" VL_address="" VL_port="" VL_name=""
-  VL_security="none" VL_network="tcp" VL_fingerprint="chrome"
+  VL_security="none" VL_network="tcp" VL_fingerprint="firefox"
   VL_sni="" VL_pbk="" VL_sid="" VL_flow=""
   unset VL_params; declare -gA VL_params=()
 
@@ -57,7 +57,7 @@ xrs_parse_uri() {
 
   VL_security="${VL_params[security]:-none}"
   VL_network="${VL_params[type]:-tcp}"
-  VL_fingerprint="${VL_params[fp]:-chrome}"
+  VL_fingerprint="${VL_params[fp]:-firefox}"
   VL_sni="${VL_params[sni]:-}"
   VL_pbk="${VL_params[pbk]:-}"
   VL_sid="${VL_params[sid]:-}"
@@ -167,11 +167,21 @@ xrs_build_config() {
   stream_json=$(echo "$stream_json" | jq \
     '. + {sockopt:{tcpKeepAliveIdle:30,tcpKeepAliveInterval:15}}')
 
+  # Mux — ТОЛЬКО для ws. WebSocket открывает отдельное TLS-соединение на каждый
+  # поток, поэтому одна страница = десятки рукопожатий; если часть залипает
+  # (за CDN наблюдалось 0.2с / 0.3с / 15с), страница не собирается. Mux сводит их
+  # к одному соединению.
+  # НЕ для tcp+reality: с XTLS-Vision mux противопоказан. НЕ для xhttp/grpc:
+  # они мультиплексируют нативно поверх h2.
+  local mux_json='null'
+  [[ "$VL_network" == "ws" ]] && mux_json='{"enabled":true,"concurrency":8}'
+
   jq -n \
     --arg addr "$VL_address" \
     --argjson port "$VL_port" \
     --argjson user "$user_json" \
     --argjson stream "$stream_json" \
+    --argjson mux "$mux_json" \
   '{
     log: {loglevel:"warning"},
     policy: {levels:{"0":{handshake:4,connIdle:120,uplinkOnly:1,downlinkOnly:1}}},
@@ -181,7 +191,8 @@ xrs_build_config() {
       {tag:"http-in",listen:"127.0.0.1",port:10809,protocol:"http",sniffing:{enabled:true,destOverride:["http","tls"]}}
     ],
     outbounds: [
-      {tag:"proxy",protocol:"vless",settings:{vnext:[{address:$addr,port:$port,users:[$user]}]},streamSettings:$stream},
+      ({tag:"proxy",protocol:"vless",settings:{vnext:[{address:$addr,port:$port,users:[$user]}]},streamSettings:$stream}
+       + (if $mux == null then {} else {mux:$mux} end)),
       {tag:"direct",protocol:"freedom",settings:{domainStrategy:"UseIP"}},
       {tag:"block",protocol:"blackhole"}
     ],

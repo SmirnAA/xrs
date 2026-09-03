@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -e
+
+TUN_JSON="/etc/xray/tun.json"
+IF="xtun0"
+TABLE=110    # xray's own traffic bypasses the tun via this table (loop guard)
+PREF=10023
+
+R=$'\e[31m'; G=$'\e[32m'; N=$'\e[0m'
+
+# Merged into the active profile via the second -config flag in the systemd
+# drop-in (see install.sh). {} = tun off.
+# Cores newer than ~mid-2026 honor gateway/autoSystemRoutingTable/
+# autoOutboundsInterface themselves; older ones silently ignore them, so
+# apply_routes() below sets up the same thing by hand — works on both.
+tun_on='{
+  "inbounds": [
+    {
+      "tag": "tun-in",
+      "protocol": "tun",
+      "settings": {
+        "name": "xtun0",
+        "mtu": 1500,
+        "gateway": ["10.23.0.1/30", "fc00::1/64"],
+        "autoSystemRoutingTable": ["0.0.0.0/0", "::/0"],
+        "autoOutboundsInterface": "auto"
+      },
+      "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
+    }
+  ]
+}'
+
+apply_routes() {
+  local i
+  for i in $(seq 20); do
+    ip link show "$IF" &>/dev/null && break
+    sleep 0.2
+  done
+  ip link show "$IF" &>/dev/null || { echo "${R}✗${N} $IF did not appear" >&2; exit 1; }
+
+  sudo ip addr replace 10.23.0.1/30 dev "$IF"
+  sudo ip link set "$IF" up
+
+  # xray runs as nobody: pin its own traffic to the physical gateway
+  local phys uid
+  phys=$(ip route show default | grep -v "dev $IF" | head -1)
+  [ -n "$phys" ] || { echo "${R}✗${N} no physical default route found" >&2; exit 1; }
+  sudo ip route replace $phys table "$TABLE"
+  uid=$(id -u nobody)
+  ip rule list pref "$PREF" | grep -q . \
+    || sudo ip rule add uidrange "$uid-$uid" lookup "$TABLE" pref "$PREF"
+
+  sudo ip route replace default dev "$IF" metric 50
+
+  # ponytail: old cores don't do v6 over tun — force v4 instead of leaking v6;
+  # drop this once the core handles ::/0 itself
+  if ip -6 route show default 2>/dev/null | grep -qv "dev $IF"; then
+    sudo ip -6 route replace unreachable default metric 50
+  fi
+}
+
+clear_routes() {
+  sudo ip rule del pref "$PREF" 2>/dev/null || true
+  sudo ip route flush table "$TABLE" 2>/dev/null || true
+  sudo ip route del default dev "$IF" metric 50 2>/dev/null || true
+  sudo ip -6 route del unreachable default metric 50 2>/dev/null || true
+}
+
+case "${1:-status}" in
+  on)  echo "$tun_on" | sudo tee "$TUN_JSON" >/dev/null ;;
+  off) clear_routes; echo '{}' | sudo tee "$TUN_JSON" >/dev/null ;;
+  reapply)
+    # called by xrs after a profile switch; no-op while tun is off
+    grep -q tun-in "$TUN_JSON" 2>/dev/null || exit 0
+    apply_routes
+    exit 0 ;;
+  status)
+    if ip route show default dev "$IF" 2>/dev/null | grep -q .; then
+      echo "tun: ${G}on${N}"
+    elif ip link show "$IF" &>/dev/null; then
+      echo "tun: ${R}iface up, routes missing${N} — run: xrs tun on"
+    else
+      echo "tun: off"
+    fi
+    exit 0 ;;
+  *)
+    echo "usage: xrs tun [on|off|status]" >&2
+    exit 1 ;;
+esac
+
+sudo systemctl restart xray
+sleep 0.3
+
+if systemctl is-active --quiet xray; then
+  [ "$1" = "on" ] && apply_routes
+  echo "${G}✓${N} tun $1"
+else
+  echo "${R}✗${N} xray failed, see: journalctl -u xray -n 30"
+  exit 1
+fi

@@ -24,12 +24,17 @@ if [ -L "$CONFIG_LINK" ]; then
 
   # парсим outbound proxy из конфига
   if command -v jq >/dev/null; then
-    addr=$(jq -r '.outbounds[] | select(.tag=="proxy") | .settings.vnext[0].address' "$target")
-    port=$(jq -r '.outbounds[] | select(.tag=="proxy") | .settings.vnext[0].port'    "$target")
-    sni=$(jq  -r '.outbounds[] | select(.tag=="proxy") | .streamSettings.realitySettings.serverName' "$target")
+    # the proxy outbound is not always the one that dials out: in wg-over-vless
+    # profiles "proxy" is the wireguard outbound and the real server sits on the
+    # vless outbound it chains through. Pick the first outbound that has a vnext.
+    ob=$(jq -c 'first(.outbounds[] | select(.settings.vnext[0].address))' "$target")
+    addr=$(echo "$ob" | jq -r '.settings.vnext[0].address')
+    port=$(echo "$ob" | jq -r '.settings.vnext[0].port')
+    sni=$(echo  "$ob" | jq -r '.streamSettings.realitySettings.serverName // .streamSettings.tlsSettings.serverName // ""')
     info "server: $addr:$port  (sni: $sni)"
     SERVER_ADDR=$addr
     SERVER_PORT=$port
+    SERVER_SNI=$sni
   fi
 else
   bad "no active profile (symlink missing)"
@@ -76,6 +81,29 @@ if [ -n "$SERVER_ADDR" ]; then
     t1=$(date +%s.%N)
     dur=$(awk "BEGIN {printf \"%.0f\", ($t1-$t0)*1000}")
     ok "tcp $SERVER_ADDR:$SERVER_PORT reachable (${dur}ms)"
+
+    # DPI here drops the TLS ClientHello for some (ip, sni) pairs while leaving
+    # TCP alone: the handshake never completes and the tunnel looks "down" for
+    # no visible reason. Separating the two says whether to change the SNI on
+    # both ends or to move the server altogether.
+    tls_probe() {  # ip port sni -> 0 if the handshake completes
+      timeout 10 curl -sS -k --noproxy '*' --max-time 8 -o /dev/null \
+        --resolve "$3:$2:$1" "https://$3/" >/dev/null 2>&1
+    }
+    if [ -n "$SERVER_SNI" ]; then
+      if tls_probe "$SERVER_ADDR" "$SERVER_PORT" "$SERVER_SNI"; then
+        ok "tls handshake with sni $SERVER_SNI"
+      else
+        bad "tls with sni $SERVER_SNI never completes (tcp is up)"
+        probe_sni="${XRS_SNI_PROBE:-www.zalando.de}"
+        if tls_probe "$SERVER_ADDR" "$SERVER_PORT" "$probe_sni"; then
+          warn "same ip answers with sni $probe_sni → the SNI is filtered, not the ip"
+          warn "fix: change serverNames/dest on the server, then serverName here"
+        else
+          warn "no sni completes a handshake → the ip itself is blocked"
+        fi
+      fi
+    fi
   else
     bad "tcp $SERVER_ADDR:$SERVER_PORT unreachable"
   fi

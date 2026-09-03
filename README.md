@@ -9,6 +9,7 @@ A set of bash scripts for managing [Xray-core](https://github.com/XTLS/Xray-core
 - **Split-routing out of the box** — `*.ru`, `geoip:ru`, `geosite:category-ru` go direct, everything else through VLESS.
 - **Diagnostics** — service status, server reachability, tunnel health, split-routing check, geo files, DNS.
 - **Geo-file updates** — with config-compatibility check and automatic rollback.
+- **TUN mode** — one-command system-wide tunnel (`xrs tun on|off`) for apps that ignore proxy settings; split-routing rules still apply.
 
 Supports `reality`, `tls`, and the `tcp` / `ws` / `grpc` transports.
 
@@ -99,6 +100,18 @@ sudo xrs-update-geo
 
 Downloads fresh `geoip.dat` and `geosite.dat`, verifies they are compatible with the config, and restarts xray. On failure — automatic rollback.
 
+### 6. TUN mode (system-wide)
+
+```bash
+xrs tun on      # route ALL system traffic through xray, no proxy settings needed
+xrs tun off     # back to explicit SOCKS/HTTP proxy only
+xrs tun status
+```
+
+For apps that ignore `HTTP(S)_PROXY` and can't be proxychained (static Go binaries, GUI apps). Creates a `xtun0` interface and takes over the default route; split-routing rules keep working (sniffing recovers domains). The tun state lives in `/etc/xray/tun.json`, separate from profiles — it survives profile switches. If xray dies, the interface and its routes disappear with it, so the network falls back to direct.
+
+Requires `CAP_NET_ADMIN` on the xray unit (the official XTLS unit already has it) and Xray-core with the `tun` inbound (v25+). Routes and loop protection are applied by `xrs-tun` itself (default route into `xtun0`, xray's own traffic pinned to the physical gateway via a uid rule), so it works even on cores that don't support `autoSystemRoutingTable` yet. IPv6 is forced to v4 while the tun is on.
+
 ## How it works
 
 After you switch a profile, Xray listens locally on:
@@ -124,6 +137,7 @@ Routing geo files are sourced from [runetfreedom/russia-v2ray-rules-dat](https:/
   xrs-rm           — remove a profile
   xrs-sub          — manage subscriptions (add/update/rm/ls)
   xrs-status       — diagnostics
+  xrs-tun          — system-wide TUN toggle (on/off/status)
   xrs-update-geo   — update geo files
 
 /usr/local/lib/xrs/
@@ -137,4 +151,8 @@ Routing geo files are sourced from [runetfreedom/russia-v2ray-rules-dat](https:/
 
 /usr/local/etc/xray/
   config.json      — symlink to the active profile
+
+/etc/xray/
+  tun.json         — TUN inbound when on, {} when off (merged via a second
+                     -config flag added by a systemd drop-in)
 ```

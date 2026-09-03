@@ -91,7 +91,8 @@ expand_sub() {
     dest="$PROFILES_DIR/$name.json"
     if ! config=$(xrs_build_config 2>/dev/null); then skipped=$((skipped+1)); continue; fi
     echo "$config" | sudo tee "$dest" >/dev/null
-    sudo chmod 644 "$dest"
+    sudo chgrp nogroup "$dest"
+    sudo chmod 640 "$dest"
     created+=("$name")
   done
 
@@ -125,7 +126,8 @@ cmd_add() {
   manifest=$(jq -n --arg url "$url" --arg name "$name" --argjson profiles "$profiles" \
     '{name:$name,url:$url,profiles:$profiles}')
   echo "$manifest" | sudo tee "$SUBS_DIR/$name.json" >/dev/null
-  sudo chmod 644 "$SUBS_DIR/$name.json"
+  sudo chgrp nogroup "$SUBS_DIR/$name.json"
+  sudo chmod 640 "$SUBS_DIR/$name.json"
 
   ok "subscription '$name' added"
   info "switch with: xrs"
@@ -159,7 +161,8 @@ cmd_update_one() {
   manifest=$(jq -n --arg url "$url" --arg name "$name" --argjson profiles "$new_profiles" \
     '{name:$name,url:$url,profiles:$profiles}')
   echo "$manifest" | sudo tee "$file" >/dev/null
-  sudo chmod 644 "$file"
+  sudo chgrp nogroup "$file"
+  sudo chmod 640 "$file"
   ok "updated '$name'"
 }
 

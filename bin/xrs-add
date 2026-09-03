@@ -82,7 +82,8 @@ echo
 
 dest="$PROFILES_DIR/$name.json"
 echo "$config" | sudo tee "$dest" > /dev/null
-sudo chmod 644 "$dest"
+sudo chgrp nogroup "$dest"
+sudo chmod 640 "$dest"
 
 ok "saved $dest"
 echo "${D}switch with:${N} xrs"

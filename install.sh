@@ -15,7 +15,7 @@ set -euo pipefail
 REPO="SmirnAA/xrs"
 BRANCH="main"
 
-SCRIPTS=(xrs xrs-add xrs-rm xrs-sub xrs-status xrs-update-geo)
+SCRIPTS=(xrs xrs-add xrs-rm xrs-sub xrs-status xrs-update-geo xrs-tun)
 DEST="/usr/local/bin"
 LIB_DIR="/usr/local/lib/xrs"
 PROFILES_DIR="/etc/xray/profiles"
@@ -122,9 +122,33 @@ ok "$LIB_DIR/build.sh"
 
 install -d "$PROFILES_DIR" "$SUBS_DIR" "$CONFIG_DIR"
 
+# Profiles carry wireguard private keys and uuids, so they must not stay
+# world-readable. xray runs as nobody, hence the nogroup ownership; an ACL lets
+# the invoking user read them from xrs/xrs-status without sudo.
+chgrp nogroup "$PROFILES_DIR" "$SUBS_DIR" 2>/dev/null || true
+chgrp nogroup "$PROFILES_DIR"/*.json "$SUBS_DIR"/*.json 2>/dev/null || true
+chmod 640 "$PROFILES_DIR"/*.json "$SUBS_DIR"/*.json 2>/dev/null || true
+if command -v setfacl >/dev/null && [[ -n "${SUDO_USER:-}" ]]; then
+  setfacl -d -m "u:$SUDO_USER:r" -m g:nogroup:r "$PROFILES_DIR" "$SUBS_DIR" || true
+  setfacl -m "u:$SUDO_USER:r" "$PROFILES_DIR"/*.json "$SUBS_DIR"/*.json 2>/dev/null || true
+fi
+
 install -d /etc/bash_completion.d
 install -m 644 "$SRC/completions/xrs.bash" /etc/bash_completion.d/xrs
 ok "/etc/bash_completion.d/xrs"
+
+# ── 6. TUN toggle (xrs tun on|off) ─────────────────────────────────────────
+step "setting up tun toggle"
+install -d /etc/systemd/system/xray.service.d
+cat > /etc/systemd/system/xray.service.d/tun.conf <<EOF
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/xray run -config $CONFIG_DIR/config.json -config /etc/xray/tun.json
+EOF
+[[ -f /etc/xray/tun.json ]] || echo '{}' > /etc/xray/tun.json
+systemctl daemon-reload
+systemctl try-restart xray >/dev/null 2>&1 || true
+ok "/etc/xray/tun.json + systemd drop-in"
 
 # ── Done ───────────────────────────────────────────────────────────────────
 echo

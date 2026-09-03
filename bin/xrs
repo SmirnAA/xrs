@@ -10,7 +10,7 @@ R=$'\e[31m'; G=$'\e[32m'; N=$'\e[0m'
 if [[ $# -ge 1 ]]; then
   cmd="$1"; shift
   case "$cmd" in
-    add|rm|sub|status|update-geo)
+    add|rm|sub|status|update-geo|tun)
       exec "xrs-$cmd" "$@" ;;
     *)
       echo "${R}✗${N} unknown command: $cmd" >&2
@@ -31,12 +31,18 @@ choice=$(ls "$PROFILES_DIR"/*.json 2>/dev/null \
 [ -z "$choice" ] && exit 0
 [ "$choice" = "$current" ] && { echo "already on $choice"; exit 0; }
 
+# a broken profile takes xray down and leaves the system with no proxy;
+# -test parses it without binding anything, so the switch fails safely
+xray run -test -c "$PROFILES_DIR/$choice.json" -c /etc/xray/tun.json >/dev/null 2>&1 \
+  || { echo "${R}✗${N} invalid config: $choice"; exit 1; }
+
 sudo ln -sf "$PROFILES_DIR/$choice.json" "$CONFIG_LINK"
 sudo systemctl restart xray
 sleep 0.3
 
 if systemctl is-active --quiet xray; then
   echo "${G}✓${N} switched to $choice"
+  xrs-tun reapply || true
 else
   echo "${R}✗${N} xray failed, see: journalctl -u xray -n 30"
   exit 1
