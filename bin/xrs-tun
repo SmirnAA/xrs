@@ -31,8 +31,7 @@ tun_on='{
 }'
 
 apply_routes() {
-  local i
-  for i in $(seq 20); do
+  for _ in $(seq 20); do
     ip link show "$IF" &>/dev/null && break
     sleep 0.2
   done

@@ -122,14 +122,16 @@ ok "$LIB_DIR/build.sh"
 
 install -d "$PROFILES_DIR" "$SUBS_DIR" "$CONFIG_DIR"
 
-# Profiles carry wireguard private keys and uuids, so they must not stay
-# world-readable. xray runs as nobody, hence the nogroup ownership; an ACL lets
-# the invoking user read them from xrs/xrs-status without sudo.
-chgrp nogroup "$PROFILES_DIR" "$SUBS_DIR" 2>/dev/null || true
-chgrp nogroup "$PROFILES_DIR"/*.json "$SUBS_DIR"/*.json 2>/dev/null || true
+# Profiles carry server uuids and keys, so they must not stay world-readable.
+# xray runs as nobody, hence the group ownership (nogroup on Debian, nobody on
+# Fedora/Arch); an ACL lets the invoking user read them from xrs/xrs-status
+# without sudo.
+XRAY_GROUP=$(id -gn nobody 2>/dev/null || echo nogroup)
+chgrp "$XRAY_GROUP" "$PROFILES_DIR" "$SUBS_DIR" 2>/dev/null || true
+chgrp "$XRAY_GROUP" "$PROFILES_DIR"/*.json "$SUBS_DIR"/*.json 2>/dev/null || true
 chmod 640 "$PROFILES_DIR"/*.json "$SUBS_DIR"/*.json 2>/dev/null || true
 if command -v setfacl >/dev/null && [[ -n "${SUDO_USER:-}" ]]; then
-  setfacl -d -m "u:$SUDO_USER:r" -m g:nogroup:r "$PROFILES_DIR" "$SUBS_DIR" || true
+  setfacl -d -m "u:$SUDO_USER:r" -m "g:$XRAY_GROUP:r" "$PROFILES_DIR" "$SUBS_DIR" || true
   setfacl -m "u:$SUDO_USER:r" "$PROFILES_DIR"/*.json "$SUBS_DIR"/*.json 2>/dev/null || true
 fi
 

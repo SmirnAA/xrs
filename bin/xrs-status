@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# xrs-status — полная диагностика xray-сетапа
+# xrs-status — full diagnostics of the xray setup
 
 PROFILES_DIR="/etc/xray/profiles"
 CONFIG_LINK="/usr/local/etc/xray/config.json"
 SOCKS_PORT=10808
 HTTP_PORT=10809
 
-# цвета
 R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; B=$'\e[34m'; D=$'\e[2m'; N=$'\e[0m'
 ok()   { echo "  ${G}✓${N} $*"; }
 bad()  { echo "  ${R}✗${N} $*"; }
@@ -14,7 +13,7 @@ warn() { echo "  ${Y}!${N} $*"; }
 info() { echo "  ${D}·${N} $*"; }
 hdr()  { echo; echo "${B}── $* ──${N}"; }
 
-# ── 1. Активный профиль ──────────────────────────────────────────────
+# ── 1. Active profile ──────────────────────────────────────────────
 hdr "profile"
 if [ -L "$CONFIG_LINK" ]; then
   current=$(basename "$(readlink -f "$CONFIG_LINK")" .json)
@@ -22,11 +21,11 @@ if [ -L "$CONFIG_LINK" ]; then
   target=$(readlink -f "$CONFIG_LINK")
   info "file: $target"
 
-  # парсим outbound proxy из конфига
+  # extract the upstream server from the config
   if command -v jq >/dev/null; then
-    # the proxy outbound is not always the one that dials out: in wg-over-vless
-    # profiles "proxy" is the wireguard outbound and the real server sits on the
-    # vless outbound it chains through. Pick the first outbound that has a vnext.
+    # the proxy outbound is not always the one that dials out: in hand-written
+    # chained profiles "proxy" may tunnel through another outbound that holds the
+    # real server. Pick the first outbound that has a vnext.
     ob=$(jq -c 'first(.outbounds[] | select(.settings.vnext[0].address))' "$target")
     addr=$(echo "$ob" | jq -r '.settings.vnext[0].address')
     port=$(echo "$ob" | jq -r '.settings.vnext[0].port')
@@ -56,14 +55,14 @@ else
   bad "inactive"
 fi
 
-# последние ошибки
+# recent errors
 errs=$(journalctl -u xray -n 50 --no-pager 2>/dev/null | grep -iE 'error|failed|warn' | grep -v "Special user nobody" | tail -3)
 if [ -n "$errs" ]; then
   warn "recent warnings/errors:"
   echo "$errs" | sed 's/^/      /'
 fi
 
-# ── 3. Порты ──────────────────────────────────────────────────────────
+# ── 3. Ports ──────────────────────────────────────────────────────────
 hdr "listening ports"
 for port in $SOCKS_PORT $HTTP_PORT; do
   if ss -tlnH "sport = :$port" | grep -q LISTEN; then
@@ -73,7 +72,7 @@ for port in $SOCKS_PORT $HTTP_PORT; do
   fi
 done
 
-# ── 4. Сеть до сервера ────────────────────────────────────────────────
+# ── 4. Path to the server ────────────────────────────────────────────────
 hdr "upstream server"
 if [ -n "$SERVER_ADDR" ]; then
   t0=$(date +%s.%N)
@@ -82,7 +81,7 @@ if [ -n "$SERVER_ADDR" ]; then
     dur=$(awk "BEGIN {printf \"%.0f\", ($t1-$t0)*1000}")
     ok "tcp $SERVER_ADDR:$SERVER_PORT reachable (${dur}ms)"
 
-    # DPI here drops the TLS ClientHello for some (ip, sni) pairs while leaving
+    # DPI often drops the TLS ClientHello for some (ip, sni) pairs while leaving
     # TCP alone: the handshake never completes and the tunnel looks "down" for
     # no visible reason. Separating the two says whether to change the SNI on
     # both ends or to move the server altogether.
@@ -111,7 +110,7 @@ else
   warn "server address unknown (install jq for parsing)"
 fi
 
-# ── 5. Прокси работают ───────────────────────────────────────────────
+# ── 5. Proxies work ───────────────────────────────────────────────
 hdr "proxy tunnel"
 proxy_ip=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT https://api.ipify.org 2>/dev/null)
 if [ -n "$proxy_ip" ]; then
@@ -170,12 +169,12 @@ hdr "routing split"
 direct_ip=$(curl -s --noproxy '*' --max-time 8 https://api.ipify.org 2>/dev/null)
 [ -n "$direct_ip" ] && info "your real ip: $direct_ip"
 
-# страна выхода через прокси
+# proxy exit country
 proxy_country=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
   "https://ipwho.is/?output=json" 2>/dev/null | grep -oP '"country":"[^"]*"' | head -1 | cut -d'"' -f4)
 info "proxy exit country: ${proxy_country:-unknown}"
 
-# .ru должен идти напрямую: yandex должен видеть наш реальный IP
+# .ru must go direct: yandex has to see our real IP
 ya_ip=$(curl -s --max-time 8 -x socks5h://127.0.0.1:$SOCKS_PORT \
   "https://yandex.ru/internet/api/v0/ip/" 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
 if [ -n "$ya_ip" ]; then
@@ -188,7 +187,7 @@ else
   warn "yandex ip-check unreachable"
 fi
 
-# ── 7. Geo файлы ─────────────────────────────────────────────────────
+# ── 7. Geo files ─────────────────────────────────────────────────────
 hdr "geo files"
 for f in geoip.dat geosite.dat; do
   path="/usr/local/share/xray/$f"

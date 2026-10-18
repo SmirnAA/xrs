@@ -1,0 +1,4 @@
+# names are sanitized (no spaces), so ls|xargs and compgen splitting are safe
+disable=SC2011,SC2207
+source-path=SCRIPTDIR
+external-sources=true

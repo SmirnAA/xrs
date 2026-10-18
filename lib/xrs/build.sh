@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # xrs shared library — VLESS URI parsing and xray config generation.
 #
 # Source this file, then call (in order):
@@ -11,6 +12,10 @@
 xrs_urldecode() {
   printf '%b' "${1//%/\\x}"
 }
+
+# group xray runs as: nogroup on Debian/Ubuntu, nobody on Fedora/Arch
+# shellcheck disable=SC2034  # consumed by callers
+XRS_GROUP=$(id -gn nobody 2>/dev/null || echo nogroup)
 
 # shellcheck disable=SC2034  # VL_* are consumed by callers
 xrs_parse_uri() {
@@ -94,16 +99,16 @@ xrs_validate() {
 # match ASCII bytes, so multi-byte UTF-8 sequences (all bytes >= 0x80) pass
 # through untouched regardless of locale.
 #
-# Flag emoji for Germany/Russia/USA/Armenia/France are first rewritten to
-# their ASCII country codes (de/ru/us/am/fr) so subscription names carry
-# readable labels instead of the raw regional-indicator pairs.
+# Flag emoji are first rewritten to their ASCII country codes (🇩🇪 -> de) so
+# subscription names carry readable labels instead of raw regional-indicator
+# pairs: each indicator U+1F1E6..U+1F1FF maps to the letter a..z.
 xrs_sanitize_name() {
-  local n="$1"
-  n="${n//$'\U0001F1E9\U0001F1EA'/de}"   # 🇩🇪 -> de
-  n="${n//$'\U0001F1F7\U0001F1FA'/ru}"   # 🇷🇺 -> ru
-  n="${n//$'\U0001F1FA\U0001F1F8'/us}"   # 🇺🇸 -> us
-  n="${n//$'\U0001F1E6\U0001F1F2'/am}"   # 🇦🇲 -> am
-  n="${n//$'\U0001F1EB\U0001F1F7'/fr}"   # 🇫🇷 -> fr
+  local n="$1" i hex ri abc=abcdefghijklmnopqrstuvwxyz
+  for i in {0..25}; do
+    printf -v hex '%08x' $((0x1F1E6 + i))
+    printf -v ri "\\U$hex"
+    n="${n//$ri/${abc:i:1}}"
+  done
   n="${n,,}"                             # lowercase ASCII
   n="${n//[[:cntrl:]]/_}"                # control chars -> _
   local bad=' !"#$%&'\''()*+,./:;<=>?@[\]^`{|}~'  # unsafe ASCII punctuation/space
@@ -167,12 +172,12 @@ xrs_build_config() {
   stream_json=$(echo "$stream_json" | jq \
     '. + {sockopt:{tcpKeepAliveIdle:30,tcpKeepAliveInterval:15}}')
 
-  # Mux — ТОЛЬКО для ws. WebSocket открывает отдельное TLS-соединение на каждый
-  # поток, поэтому одна страница = десятки рукопожатий; если часть залипает
-  # (за CDN наблюдалось 0.2с / 0.3с / 15с), страница не собирается. Mux сводит их
-  # к одному соединению.
-  # НЕ для tcp+reality: с XTLS-Vision mux противопоказан. НЕ для xhttp/grpc:
-  # они мультиплексируют нативно поверх h2.
+  # Mux — ONLY for ws. WebSocket opens a separate TLS connection per stream, so
+  # one page means dozens of handshakes; if some of them stall (behind a CDN
+  # 0.2s / 0.3s / 15s was observed) the page never finishes. Mux folds them into
+  # one connection.
+  # NOT for tcp+reality: mux is incompatible with XTLS-Vision. NOT for
+  # xhttp/grpc: they multiplex natively over h2.
   local mux_json='null'
   [[ "$VL_network" == "ws" ]] && mux_json='{"enabled":true,"concurrency":8}'
 
@@ -193,7 +198,9 @@ xrs_build_config() {
     outbounds: [
       ({tag:"proxy",protocol:"vless",settings:{vnext:[{address:$addr,port:$port,users:[$user]}]},streamSettings:$stream}
        + (if $mux == null then {} else {mux:$mux} end)),
-      {tag:"direct",protocol:"freedom",settings:{domainStrategy:"UseIP"}},
+      # AsIs: resolve via the system (local) DNS — xray DNS goes out through the
+      # proxy and returns foreign CDN nodes that are unreachable directly
+      {tag:"direct",protocol:"freedom"},
       {tag:"block",protocol:"blackhole"}
     ],
     routing: {

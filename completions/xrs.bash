@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 _xrs() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [[ $COMP_CWORD -eq 1 ]]; then

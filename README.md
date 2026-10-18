@@ -1,5 +1,7 @@
 # xrs
 
+[![ci](https://github.com/SmirnAA/xrs/actions/workflows/ci.yml/badge.svg)](https://github.com/SmirnAA/xrs/actions/workflows/ci.yml)
+
 A set of bash scripts for managing [Xray-core](https://github.com/XTLS/Xray-core) on Linux. Each server is stored as a separate profile, and switching between them takes a single command via `fzf`. The generated config uses split-routing: Russian traffic goes direct, everything else through the proxy.
 
 ## Features
@@ -156,3 +158,16 @@ Routing geo files are sourced from [runetfreedom/russia-v2ray-rules-dat](https:/
   tun.json         — TUN inbound when on, {} when off (merged via a second
                      -config flag added by a systemd drop-in)
 ```
+
+## Development
+
+```bash
+tests/test_build.sh                 # URI parsing / config generation self-check (bash + jq)
+shellcheck -x bin/* lib/xrs/build.sh install.sh
+```
+
+CI runs both on every push.
+
+## License
+
+MIT

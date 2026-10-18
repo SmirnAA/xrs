@@ -12,9 +12,9 @@ R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; N=$'\e[0m'
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
-# Устойчивая загрузка: GitHub-релизы тут часто троттлятся, и обычный curl
-# висит на середине. Обрываем при стагнации (< 30КБ/с в течение 15с), повторяем
-# с докачкой, и при неудаче пробуем через локальный прокси xray (socks 10808).
+# Robust fetch: GitHub release downloads are often throttled and plain curl
+# hangs mid-transfer. Abort on stall (< 30KB/s for 15s), retry with resume,
+# and if that fails, try through the local xray proxy (socks 10808).
 geo_fetch() {
   local url="$1" out="$2"
   local common=(-fL -C - --connect-timeout 10 --speed-limit 30000 --speed-time 15
@@ -22,7 +22,7 @@ geo_fetch() {
   rm -f "$out"
   curl "${common[@]}" -o "$out" "$url" && return 0
   if ss -tlnH "sport = :10808" 2>/dev/null | grep -q LISTEN; then
-    echo "  прямая загрузка не идёт — пробую через прокси (127.0.0.1:10808)"
+    echo "  direct download failed — retrying through the proxy (127.0.0.1:10808)"
     rm -f "$out"
     curl "${common[@]}" -x socks5h://127.0.0.1:10808 -o "$out" "$url" && return 0
   fi
@@ -32,59 +32,59 @@ geo_fetch() {
 restore_backup() {
   if [ -f "$BACKUP_DIR/geoip.dat" ] && [ -f "$BACKUP_DIR/geosite.dat" ]; then
     sudo cp "$BACKUP_DIR/geoip.dat" "$BACKUP_DIR/geosite.dat" "$GEO_DIR/"
-    echo "  ${G}✓ откат из бэкапа выполнен${N}"
+    echo "  ${G}✓ restored from backup${N}"
   else
-    echo "  ${Y}! бэкапа нет — откат невозможен${N}"
+    echo "  ${Y}! no backup — cannot roll back${N}"
   fi
 }
 
-echo "${Y}[1/4]${N} Скачиваю новые geo-файлы..."
-geo_fetch "$BASE_URL/geoip.dat"   "$TMP_DIR/geoip.dat"   || { echo "${R}✗ ошибка загрузки geoip.dat${N}";   exit 1; }
-geo_fetch "$BASE_URL/geosite.dat" "$TMP_DIR/geosite.dat" || { echo "${R}✗ ошибка загрузки geosite.dat${N}"; exit 1; }
+echo "${Y}[1/4]${N} Downloading new geo files..."
+geo_fetch "$BASE_URL/geoip.dat"   "$TMP_DIR/geoip.dat"   || { echo "${R}✗ failed to download geoip.dat${N}";   exit 1; }
+geo_fetch "$BASE_URL/geosite.dat" "$TMP_DIR/geosite.dat" || { echo "${R}✗ failed to download geosite.dat${N}"; exit 1; }
 
-# Проверяем что файлы не пустые и похожи на protobuf
+# a truncated download is the usual failure mode — real files are tens of MB
 for f in geoip.dat geosite.dat; do
   size=$(stat -c%s "$TMP_DIR/$f")
   if [ "$size" -lt 100000 ]; then
-    echo "${R}✗ $f слишком маленький (${size}B) — похоже на битую загрузку${N}"
+    echo "${R}✗ $f is too small (${size}B) — looks like a broken download${N}"
     exit 1
   fi
 done
 echo "  geoip.dat:   $(du -h "$TMP_DIR/geoip.dat"   | cut -f1)"
 echo "  geosite.dat: $(du -h "$TMP_DIR/geosite.dat" | cut -f1)"
 
-echo "${Y}[2/4]${N} Сохраняю бэкап текущих файлов..."
+echo "${Y}[2/4]${N} Backing up current files..."
 if [ -f "$GEO_DIR/geoip.dat" ] && [ -f "$GEO_DIR/geosite.dat" ]; then
   sudo mkdir -p "$BACKUP_DIR"
   sudo cp "$GEO_DIR/geoip.dat" "$GEO_DIR/geosite.dat" "$BACKUP_DIR/"
-  echo "  ${G}✓ бэкап в $BACKUP_DIR${N}"
+  echo "  ${G}✓ backup in $BACKUP_DIR${N}"
 else
-  echo "  текущих файлов нет — первый запуск, бэкап пропущен"
+  echo "  no current files — first run, backup skipped"
 fi
 
-echo "${Y}[3/4]${N} Устанавливаю и проверяю совместимость с конфигом..."
+echo "${Y}[3/4]${N} Installing and checking config compatibility..."
 sudo mkdir -p "$GEO_DIR"
 sudo cp "$TMP_DIR/geoip.dat" "$TMP_DIR/geosite.dat" "$GEO_DIR/"
 
 if [ ! -e "$CONFIG" ]; then
-  echo "  ${Y}! активного конфига нет — проверка и перезапуск не нужны${N}"
-  echo "${G}✓ geo-файлы обновлены${N}"
+  echo "  ${Y}! no active config — nothing to check or restart${N}"
+  echo "${G}✓ geo files updated${N}"
   exit 0
 fi
 
 if xray run -test -c "$CONFIG" 2>&1; then
-  echo "  ${G}✓ конфиг валиден с новыми файлами${N}"
+  echo "  ${G}✓ config is valid with the new files${N}"
 else
-  echo "  ${R}✗ конфиг не проходит валидацию — откат${N}"
+  echo "  ${R}✗ config fails validation — rolling back${N}"
   restore_backup
   exit 1
 fi
 
-echo "${Y}[4/4]${N} Перезапускаю xray..."
+echo "${Y}[4/4]${N} Restarting xray..."
 if sudo systemctl restart xray && sleep 1 && systemctl is-active --quiet xray; then
-  echo "${G}✓ готово — xray работает с новыми geo-файлами${N}"
+  echo "${G}✓ done — xray is running with the new geo files${N}"
 else
-  echo "${R}✗ xray не запустился — откат${N}"
+  echo "${R}✗ xray failed to start — rolling back${N}"
   restore_backup
   sudo systemctl restart xray || true
   exit 1

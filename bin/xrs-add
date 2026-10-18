@@ -82,7 +82,7 @@ echo
 
 dest="$PROFILES_DIR/$name.json"
 echo "$config" | sudo tee "$dest" > /dev/null
-sudo chgrp nogroup "$dest"
+sudo chgrp "$XRS_GROUP" "$dest"
 sudo chmod 640 "$dest"
 
 ok "saved $dest"

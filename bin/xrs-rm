@@ -4,7 +4,7 @@ set -euo pipefail
 PROFILES_DIR="/etc/xray/profiles"
 CONFIG_LINK="/usr/local/etc/xray/config.json"
 
-R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; D=$'\e[2m'; N=$'\e[0m'
+R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; N=$'\e[0m'
 die() { echo "${R}✗${N} $*" >&2; exit 1; }
 
 current=""

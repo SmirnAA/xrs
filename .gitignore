@@ -1,2 +1,2 @@
-# профили и подписки содержат данные серверов — в репозиторий не попадают
+# profiles and subscriptions hold server data — never commit them
 *.json
