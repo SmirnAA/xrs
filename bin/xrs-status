@@ -34,6 +34,9 @@ if [ -L "$CONFIG_LINK" ]; then
     SERVER_ADDR=$addr
     SERVER_PORT=$port
     SERVER_SNI=$sni
+    # finalmask (fm= in the link) fragments the ClientHello; the plain curl
+    # probe below cannot, so its verdict says nothing about the tunnel itself
+    SERVER_FM=$(echo "$ob" | jq -r 'if .streamSettings.finalmask then "1" else "" end')
   fi
 else
   bad "no active profile (symlink missing)"
@@ -92,6 +95,9 @@ if [ -n "$SERVER_ADDR" ]; then
     if [ -n "$SERVER_SNI" ]; then
       if tls_probe "$SERVER_ADDR" "$SERVER_PORT" "$SERVER_SNI"; then
         ok "tls handshake with sni $SERVER_SNI"
+      elif [ -n "${SERVER_FM:-}" ]; then
+        warn "plain tls with sni $SERVER_SNI is filtered; the profile fragments the"
+        warn "ClientHello (finalmask) — trust 'proxy tunnel' below, not this probe"
       else
         bad "tls with sni $SERVER_SNI never completes (tcp is up)"
         probe_sni="${XRS_SNI_PROBE:-www.zalando.de}"
