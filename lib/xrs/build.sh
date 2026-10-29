@@ -165,6 +165,13 @@ xrs_build_config() {
     fi
   fi
 
+  # fm = xray finalmask (e.g. fragment the TLS ClientHello against SNI DPI).
+  # Client-side only; needs xray 26.x. A malformed blob is dropped, not fatal.
+  local fm="${VL_params[fm]:-}"
+  if [[ -n "$fm" ]] && printf '%s' "$fm" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    stream_json=$(echo "$stream_json" | jq --argjson fm "$fm" '.finalmask = $fm')
+  fi
+
   # TCP keepalive on the proxy outbound: XTLS-Vision opens one TCP per stream
   # (no mux), and relay/NAT hops silently black-hole idle flows without a RST.
   # Without keepalive those dead sockets pile up and get reused → requests hang
