@@ -24,6 +24,14 @@ xrs_validate && check "valid reality uri" 0 0
 cfg=$(xrs_build_config)
 check "reality publicKey" "KEY"   "$(jq -r '.outbounds[0].streamSettings.realitySettings.publicKey' <<<"$cfg")"
 check "no mux for reality" "null" "$(jq -c '.outbounds[0].mux' <<<"$cfg")"
+check "no finalmask without fm" "null" "$(jq -c '.outbounds[0].streamSettings.finalmask' <<<"$cfg")"
+
+fm='%7B%22tcp%22%3A%5B%7B%22type%22%3A%22fragment%22%2C%22settings%22%3A%7B%22length%22%3A%22100-200%22%2C%22packets%22%3A%22tlshello%22%2C%22interval%22%3A%220-1%22%7D%7D%5D%7D'
+xrs_parse_uri "vless://$uuid@example.com:443?security=reality&pbk=KEY&sni=www.example.com&sid=ab&fm=$fm#x"
+cfg=$(xrs_build_config)
+check "fm -> finalmask" "tlshello" "$(jq -r '.outbounds[0].streamSettings.finalmask.tcp[0].settings.packets' <<<"$cfg")"
+xrs_parse_uri "vless://$uuid@example.com:443?security=reality&pbk=KEY&sni=www.example.com&sid=ab&fm=garbage#x"
+check "bad fm ignored" "null" "$(xrs_build_config | jq -c '.outbounds[0].streamSettings.finalmask')"
 
 xrs_parse_uri "vless://$uuid@example.com:8443?security=tls&type=ws&path=%2Fws&sni=cdn.example.com"
 cfg=$(xrs_build_config)
