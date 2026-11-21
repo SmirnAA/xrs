@@ -64,7 +64,35 @@ expand_sub() {
   local sub="$1"
   local -A used=()
   local -a created=()
-  local skipped=0 line base candidate name dest config
+  local skipped=0 line base candidate name dest config input
+
+  input=$(cat)
+
+  # JSON subscription: array of full xray configs (balancers, routing, …) —
+  # stored as-is, one profile per element, named after .remarks
+  if jq -e 'type=="array"' <<< "$input" >/dev/null 2>&1; then
+    local n idx
+    n=$(jq length <<< "$input")
+    for ((idx=0; idx<n; idx++)); do
+      config=$(jq ".[$idx]" <<< "$input")
+      if ! jq -e '.outbounds | type=="array" and length>0' <<< "$config" >/dev/null; then
+        skipped=$((skipped+1)); continue
+      fi
+      base=$(xrs_sanitize_name "$(jq -r '.remarks // empty' <<< "$config")")
+      [[ -z "$base" ]] && base="srv"
+      candidate="$base"
+      local i=2
+      while [[ -n "${used[$candidate]:-}" ]]; do candidate="$base-$i"; i=$((i+1)); done
+      used[$candidate]=1
+      name="$sub:$candidate"
+      dest="$PROFILES_DIR/$name.json"
+      xrs_sanitize_json_profile <<< "$config" | sudo tee "$dest" >/dev/null
+      sudo chgrp "$XRS_GROUP" "$dest"
+      sudo chmod 640 "$dest"
+      created+=("$name")
+    done
+    input=""
+  fi
 
   while IFS= read -r line; do
     line="${line//$'\r'/}"
@@ -94,7 +122,7 @@ expand_sub() {
     sudo chgrp "$XRS_GROUP" "$dest"
     sudo chmod 640 "$dest"
     created+=("$name")
-  done
+  done <<< "$input"
 
   local msg="${#created[@]} server(s) imported"
   (( skipped > 0 )) && msg+=", $skipped skipped (non-VLESS/invalid)"
