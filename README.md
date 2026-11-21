@@ -6,7 +6,7 @@ A set of bash scripts for managing [Xray-core](https://github.com/XTLS/Xray-core
 
 ## Features
 
-- **Server profiles** — add from VLESS links (`vless://`) and subscriptions (base64 or plaintext).
+- **Server profiles** — add from VLESS links (`vless://`) and subscriptions (base64, plaintext, or JSON with full xray configs and balancers).
 - **Fast switching** — interactive selection via `fzf` with automatic xray restart.
 - **Split-routing out of the box** — `*.ru`, `geoip:ru`, `geosite:category-ru` go direct, everything else through VLESS.
 - **Diagnostics** — service status, server reachability, tunnel health, split-routing check, geo files, DNS.
@@ -63,6 +63,13 @@ xrs sub add 'https://example.com/sub/token' netherlands
 ```
 
 The script downloads the subscription (base64 or plaintext), expands each VLESS server into a separate profile `netherlands:<name>`, and skips links of other protocols (vmess/ss/trojan).
+
+JSON subscriptions (an array of full xray configs, e.g. an "auto" profile that balances across several servers) are also supported: each element becomes a profile named after its `remarks`. The provider's outbounds, routing, DNS and observatory are kept as-is, so its routing rules replace the built-in split-routing. xrs adjusts the provider config on import:
+
+- the inbounds are replaced with the local SOCKS/HTTP ports below; `api`, `stats`, `policy`, `reverse`, `metrics` and log file paths are dropped;
+- `leastLoad` balancers get `tolerance: 0.2` when it is not set, so a node that fails more than 20% of its health pings stops being picked;
+- `burstObservatory` keeps at least 10 ping samples;
+- a balancer whose `fallbackTag` points to a blackhole (or is not set) falls back to its first node, so traffic isn't blocked right after a restart, before the first health ping.
 
 ```bash
 xrs sub update [name]   # re-sync (all, if no name given)
