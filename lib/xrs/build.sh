@@ -221,3 +221,30 @@ xrs_build_config() {
     }
   }'
 }
+
+# sanitize an untrusted provider JSON profile (stdin -> stdout): keep
+# outbounds/routing/dns/observatory, force local loopback inbounds, drop
+# api/stats/reverse and log file paths. Also harden balancers: providers ship
+# leastLoad without `tolerance`, so a node dropping half its pings keeps its
+# low average RTT and stays selected; and a blackhole fallbackTag blocks all
+# traffic for the first seconds after a restart, before any ping result.
+xrs_sanitize_json_profile() {
+  jq 'del(.remarks, .api, .stats, .policy, .reverse, .metrics)
+      | .log = {loglevel: (.log.loglevel // "warning")}
+      | .inbounds = [
+          {tag:"socks",listen:"127.0.0.1",port:10808,protocol:"socks",settings:{udp:true,auth:"noauth"},sniffing:{enabled:true,destOverride:["http","tls","quic"]}},
+          {tag:"http",listen:"127.0.0.1",port:10809,protocol:"http",sniffing:{enabled:true,destOverride:["http","tls","quic"]}}
+        ]
+      | [.outbounds[] | select(.protocol == "blackhole") | .tag] as $holes
+      | .outbounds as $obs
+      | if .routing.balancers then .routing.balancers |= map(
+          (.selector // []) as $sel
+          | if .strategy.type == "leastLoad" then .strategy.settings.tolerance //= 0.2 else . end
+          | if .fallbackTag == null or (.fallbackTag | IN($holes[])) then
+              .fallbackTag = ([$obs[].tag | select(. as $t | $sel | any(. as $p | $t | startswith($p)))][0] // .fallbackTag)
+            else . end
+        ) else . end
+      | if .burstObservatory.pingConfig then
+          .burstObservatory.pingConfig.sampling |= ([. // 0, 10] | max)
+        else . end'
+}

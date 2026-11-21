@@ -44,4 +44,14 @@ xrs_parse_uri "vmess://x" 2>/dev/null && check "rejects non-vless" 1 0 || check 
 
 check "unsafe chars" "a_b_c_ü" "$(xrs_sanitize_name 'A/b c:ü')"
 
+prof='{"remarks":"r","api":{},"outbounds":[{"tag":"n-a","protocol":"vless"},{"tag":"n-b","protocol":"vless"},{"tag":"block","protocol":"blackhole"}],
+  "routing":{"balancers":[{"tag":"exit","selector":["n-"],"fallbackTag":"block","strategy":{"type":"leastLoad","settings":{"maxRTT":"4s"}}}]},
+  "burstObservatory":{"pingConfig":{"sampling":3}}}'
+out=$(xrs_sanitize_json_profile <<<"$prof")
+check "json: api dropped"        "null" "$(jq -c '.api' <<<"$out")"
+check "json: tolerance added"    "0.2"  "$(jq -c '.routing.balancers[0].strategy.settings.tolerance' <<<"$out")"
+check "json: blackhole fallback" "n-a"  "$(jq -r '.routing.balancers[0].fallbackTag' <<<"$out")"
+check "json: sampling raised"    "10"   "$(jq -c '.burstObservatory.pingConfig.sampling' <<<"$out")"
+check "json: no balancers ok"    "null" "$(xrs_sanitize_json_profile <<<'{"outbounds":[{"tag":"x"}]}' | jq -c .routing)"
+
 exit "$fail"

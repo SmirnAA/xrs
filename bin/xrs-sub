@@ -86,14 +86,7 @@ expand_sub() {
       used[$candidate]=1
       name="$sub:$candidate"
       dest="$PROFILES_DIR/$name.json"
-      # untrusted provider JSON: keep outbounds/routing/dns/observatory, force
-      # local loopback inbounds, drop api/stats/reverse and log file paths
-      jq 'del(.remarks, .api, .stats, .policy, .reverse, .metrics)
-          | .log = {loglevel: (.log.loglevel // "warning")}
-          | .inbounds = [
-              {tag:"socks",listen:"127.0.0.1",port:10808,protocol:"socks",settings:{udp:true,auth:"noauth"},sniffing:{enabled:true,destOverride:["http","tls","quic"]}},
-              {tag:"http",listen:"127.0.0.1",port:10809,protocol:"http",sniffing:{enabled:true,destOverride:["http","tls","quic"]}}
-            ]' <<< "$config" | sudo tee "$dest" >/dev/null
+      xrs_sanitize_json_profile <<< "$config" | sudo tee "$dest" >/dev/null
       sudo chgrp "$XRS_GROUP" "$dest"
       sudo chmod 640 "$dest"
       created+=("$name")
